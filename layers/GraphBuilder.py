@@ -1,4 +1,7 @@
+from collections import defaultdict
+
 import numpy as np
+import pandas as pd
 import torch
 import pickle
 from utils import Constants
@@ -9,8 +12,6 @@ import torch.nn.functional as F
 
 
 def build_friendship_network(dataloader):
-    # 初始化选项和用户索引字典
-    # options = Options(dataloader)
     _u2idx = {}
 
     # 从文件中加载用户到索引的映射
@@ -111,3 +112,126 @@ def build_hyper_diff_graph(cascades, timestamps, user_size):
 
     # 返回稠密邻接矩阵和根用户列表
     return Times.to_dense(), root_list
+
+
+def build_dynamic_heterogeneous_graph(dataloader, time_step_split):
+    _u2idx = {}
+    _idx2u = []
+
+    with open(dataloader.u2idx_dict, 'rb') as handle:
+        _u2idx = pickle.load(handle)
+    with open(dataloader.idx2u_dict, 'rb') as handle:
+        _idx2u = pickle.load(handle)
+
+    follow_relation = []  # directed relation
+    if os.path.exists(dataloader.net_data):
+        with open(dataloader.net_data, 'r') as handle:
+            edges_list = handle.read().strip().split("\n")
+            edges_list = [edge.split(',') for edge in edges_list]
+            follow_relation = [(_u2idx[edge[0]], _u2idx[edge[1]]) for edge in edges_list if
+                               edge[0] in _u2idx and edge[1] in _u2idx]
+
+    dy_diff_graph_list = load_dynamic_diffusion_graph(dataloader, time_step_split)
+    dynamic_graph = dict()
+    for x in sorted(dy_diff_graph_list.keys()):
+        edges_list = follow_relation
+        edges_type_list = [0] * len(follow_relation)  # 0:follow relation,  1:repost relation
+        edges_weight = [1.0] * len(follow_relation)
+        for key, value in dy_diff_graph_list[x].items():
+            edges_list.append(key)
+            edges_type_list.append(1)
+            edges_weight.append(sum(value))
+
+        edges_list_tensor = torch.LongTensor(edges_list).t()
+        edges_type = torch.LongTensor(edges_type_list)
+        edges_weight = torch.FloatTensor(edges_weight)
+
+        data = Data(edge_index=edges_list_tensor, edge_type=edges_type, edge_weight=edges_weight)
+        dynamic_graph[x] = data
+    return dynamic_graph
+
+
+def load_dynamic_diffusion_graph(dataloader, time_step_split):
+    """
+    Notice: we remove the code that repeated the construction of diffusion graphs with a different list-based format.
+    :param dataloader:
+    :param time_step_split:
+    :return:
+    """
+    # Initialize dictionaries for user-to-index and index-to-user mappings
+    _u2idx = {}
+    _idx2u = []
+
+    # Load pre-existing user-to-index and index-to-user mappings from pickled files
+    with open(dataloader.u2idx_dict, 'rb') as handle:
+        _u2idx = pickle.load(handle)
+    with open(dataloader.idx2u_dict, 'rb') as handle:
+        _idx2u = pickle.load(handle)
+
+    # Extract cascades and their corresponding timestamps from training data
+    cascades, timestamps, _ = dataloader.train_data
+
+    # Initialize an empty list to store user interaction pairs with timestamps
+    t_cascades = []
+
+    # Iterate over each cascade and its corresponding timestamps
+    for cascade, timestamp in zip(cascades, timestamps):
+        # Create a list of user-timestamp pairs for each cascade
+        userlist = list(zip(cascade, timestamp))
+
+        # Create pairs of consecutive users along with the interaction time
+        pair_user = [(i[0], j[0], j[1]) for i, j in zip(userlist[:-1], userlist[1:])]
+
+        # Consider only cascades with more than 1 pair and fewer than or equal to 500 pairs
+        # Keep the original Setting.
+        if len(pair_user) > 1 and len(pair_user) <= 500:
+            t_cascades.extend(pair_user)
+
+    # Convert the list of user interaction pairs into a pandas DataFrame
+    t_cascades_pd = pd.DataFrame(t_cascades, columns=["user1", "user2", "timestamp"])
+
+    # Sort the interactions based on timestamp
+    t_cascades_pd = t_cascades_pd.sort_values(by="timestamp")
+
+    # Calculate the total number of interactions and the length of each time step
+    t_cascades_length = t_cascades_pd.shape[0]
+    step_length_x = t_cascades_length // time_step_split
+
+    # Dictionary to store cascades in different time steps
+    t_cascades_list = dict()
+
+    # Slice the data into time steps and extract the relevant user interactions
+    for x in range(step_length_x, t_cascades_length - step_length_x, step_length_x):
+        # Subset of data up to the current time step
+        t_cascades_pd_sub = t_cascades_pd[:x]
+
+        # Extract pairs of users for the current time slice
+        t_cascades_sub_list = t_cascades_pd_sub.apply(lambda x: (x["user1"], x["user2"]), axis=1).tolist()
+
+        # Get the maximum timestamp for this subset
+        sub_timesas = t_cascades_pd_sub["timestamp"].max()
+
+        # Store the user interaction pairs under the corresponding timestamp
+        t_cascades_list[sub_timesas] = t_cascades_sub_list
+
+    # Handle the last time step (which includes all interactions)
+    t_cascades_sub_list = t_cascades_pd.apply(lambda x: (x["user1"], x["user2"]), axis=1).tolist()
+    sub_timesas = t_cascades_pd["timestamp"].max()
+    t_cascades_list[sub_timesas] = t_cascades_sub_list
+
+    # Initialize a dictionary to store the dynamic diffusion graph at each time step
+    dynamic_graph_dict_list = dict()
+
+    # Iterate through sorted timestamps and construct the diffusion graph
+    for key in sorted(t_cascades_list.keys()):
+        edges_list = t_cascades_list[key]
+
+        # Create a dictionary to track interactions between user pairs
+        cascade_dic = defaultdict(list)
+        for upair in edges_list:
+            cascade_dic[upair].append(1)
+
+        # Store the diffusion graph at the current time step
+        dynamic_graph_dict_list[key] = cascade_dic
+
+    return dynamic_graph_dict_list

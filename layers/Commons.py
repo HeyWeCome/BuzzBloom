@@ -263,3 +263,91 @@ class HGATLayer(nn.Module):
     def __repr__(self):
         return f"{self.__class__.__name__} ({self.input_dim} -> {self.output_dim})"
 
+
+class DynamicGraphNN(nn.Module):
+    def __init__(self, num_nodes, hidden_dim, time_step_split, dropout_rate=0.1):
+        """
+        初始化动态图神经网络（Dynamic Graph Neural Network）。
+
+        :param num_nodes: 节点总数（词汇表大小）
+        :param hidden_dim: 隐藏层特征的维度
+        :param dropout_rate: 丢弃率，用于正则化
+        """
+        super(DynamicGraphNN, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_nodes = num_nodes
+
+        # 嵌入层，将节点映射到特征空间
+        self.embedding = nn.Embedding(num_nodes, hidden_dim)
+        init.xavier_normal_(self.embedding.weight)
+
+        # 图神经网络层
+        self.gnn1 = GraphNN(num_nodes, hidden_dim)
+
+        # 线性层，将多步图嵌入映射到隐藏维度
+        self.linear = nn.Linear(hidden_dim * time_step_split, hidden_dim)
+        init.xavier_normal_(self.linear.weight)
+
+        # 丢弃层，用于正则化
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(self, diffusion_graphs):
+        """
+        前向传播。
+
+        :param diffusion_graphs: 包含多个扩散图的字典
+        :return: 各扩散图的嵌入表示
+        """
+        results = dict()
+        graph_embedding_list = []
+
+        # 遍历扩散图
+        for key in sorted(diffusion_graphs.keys()):
+            graph = diffusion_graphs[key]
+            graph_x_embeddings = self.gnn1(graph)
+
+            # 应用丢弃
+            graph_x_embeddings = self.dropout(graph_x_embeddings)
+
+            # 将嵌入移动到 CPU
+            graph_x_embeddings = graph_x_embeddings.cpu()
+
+            # 存储结果
+            graph_embedding_list.append(graph_x_embeddings)
+            results[key] = graph_x_embeddings
+
+        return results
+
+
+class TimeAttention(nn.Module):
+    def __init__(self, time_size, in_features1):
+        super(TimeAttention, self).__init__()
+        self.time_embedding = nn.Embedding(time_size, in_features1)
+        init.xavier_normal_(self.time_embedding.weight)
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, T_idx, Dy_U_embed, mask=None, episilon=1e-6):
+        '''
+            T_idx: (bsz, user_len)
+            Dy_U_embed: (bsz, user_len, time_len, d) # uid 从动态embedding lookup 之后的节点向量
+            output: (bsz, user_len, d)
+        '''
+        temperature = Dy_U_embed.size(-1) ** 0.5 + episilon
+        T_embed = self.time_embedding(T_idx) # (bsz, user_len, d)
+
+        # print(T_embed.size())
+        # print(Dy_U_embed.size())
+
+        affine = torch.einsum("bud,butd->but", T_embed, Dy_U_embed) # (bsz, user_len, time_len)
+        score = affine / temperature
+
+        # if mask is None:
+        #     mask = torch.triu(torch.ones(score.size()), diagonal=1).bool().cuda()
+        #     score = score.masked_fill(mask, -2**32+1)
+
+        alpha = F.softmax(score, dim=1)  # (bsz, user_len, time_len)
+        # alpha = self.dropout(alpha)
+        alpha = alpha.unsqueeze(dim=-1)  # (bsz, user_len, time_len, 1)
+
+        att = (alpha * Dy_U_embed).sum(dim=2)  # (bsz, user_len, d)
+        return att
