@@ -10,7 +10,6 @@ import torch.nn as nn
 from tqdm import tqdm
 from utils.Metrics import Metrics
 from layers import GraphBuilder
-from models.MSHGAT import MSHGAT
 from utils import Utils, Constants
 from utils.Optim import ScheduledOptim
 from helpers.BaseLoader import BaseLoader, DataLoader
@@ -56,20 +55,20 @@ def main(model_class):
     valid_data = DataLoader(valid, batch_size=args.batch_size, load_dict=True, cuda=False)
     test_data = DataLoader(test, batch_size=args.batch_size, load_dict=True, cuda=False)
 
-    # 加载友谊网络
-    logging.info("[ - Loading the friendship network]")
-    relation_graph = GraphBuilder.build_friendship_network(data_loader)
-
-    # 加载扩散超图的列表
-    logging.info("[ - Loading the hyper diffusion network list]")
-    hyper_graph_list = GraphBuilder.build_diff_hyper_graph_list(total_cascades, timestamps, user_size)
+    # # 加载友谊网络
+    # logging.info("[ - Loading the friendship network]")
+    # relation_graph = GraphBuilder.build_friendship_network(data_loader)
+    #
+    # # 加载扩散超图的列表
+    # logging.info("[ - Loading the hyper diffusion network list]")
+    # hyper_graph_list = GraphBuilder.build_diff_hyper_graph_list(total_cascades, timestamps, user_size)
 
     # ============ Preparing Model ============#
     model = model_class(args, data_loader)
 
     # Run Model
     runner = BaseRunner(model)
-    runner.run(model, train_data, valid_data, test_data, relation_graph, hyper_graph_list, args)
+    runner.run(model, train_data, valid_data, test_data, args)
 
 
 if __name__ == '__main__':

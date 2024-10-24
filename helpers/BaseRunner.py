@@ -14,7 +14,7 @@ class BaseRunner(object):
     def __init__(self, args):
         self.patience = 10  # The runner will stop when the validation score does not improve for 10 epochs
 
-    def run(self, model, train_data, valid_data, test_data, relation_graph, hyper_graph_list, args):
+    def run(self, model, train_data, valid_data, test_data, args):
         loss_func = nn.CrossEntropyLoss(reduction='sum', ignore_index=Constants.PAD)
         params = model.parameters()
         adam = torch.optim.Adam(params, betas=(0.9, 0.98), eps=1e-09)
@@ -29,8 +29,10 @@ class BaseRunner(object):
         for epoch_i in range(args.epoch):
             logging.info(f'\n[ Epoch {epoch_i} ]')
             start = time.time()
-            train_loss, train_accu = self.train_epoch(model, train_data, relation_graph, hyper_graph_list, loss_func,
-                                                 optimizer)
+            train_loss, train_accu = self.train_epoch(model,
+                                                      train_data,
+                                                      loss_func,
+                                                      optimizer)
             logging.info(
                 f'  \n- (Training)   '
                 f'Loss: {train_loss:8.5f} | '
@@ -39,7 +41,7 @@ class BaseRunner(object):
 
             if epoch_i >= 0:
                 start = time.time()
-                scores = self.test_epoch(model, valid_data, relation_graph, hyper_graph_list)
+                scores = self.test_epoch(model, valid_data)
                 logging.info('\n  - (Validation)')
 
                 # Print metrics in a structured format
@@ -51,7 +53,7 @@ class BaseRunner(object):
                 logging.info(f'Validation use time: {(time.time() - start) / 60:.3f} min')
 
                 logging.info('\n  - (Test)')
-                scores = self.test_epoch(model, test_data, relation_graph, hyper_graph_list)
+                scores = self.test_epoch(model, test_data)
 
                 logging.info(f"{'Metric':<15} {'Score':<20}")
                 logging.info('-' * 35)  # Separator line
@@ -60,7 +62,7 @@ class BaseRunner(object):
 
                 if validation_history <= sum(scores.values()):
                     logging.info(
-                        f"\nBest Validation hit@100: {scores['hits@100']} at Epoch: {epoch_i}, model has been saved.")
+                        f"\nBest Validation at Epoch: {epoch_i}, model has been saved.")
                     validation_history = sum(scores.values())
                     best_scores = scores
                     torch.save(model.state_dict(), args.model_path)
@@ -71,7 +73,7 @@ class BaseRunner(object):
         for metric, score in best_scores.items():
             logging.info(f"{metric:<15} {score:<20.6f}")
 
-    def train_epoch(self, model, training_data, graph, hypergraph_list, loss_func, optimizer):
+    def train_epoch(self, model, training_data, loss_func, optimizer):
         # 设置模型为训练模式
         model.train()
 
@@ -96,7 +98,7 @@ class BaseRunner(object):
             optimizer.zero_grad()
 
             # 使用模型进行预测
-            pred = model(tgt, tgt_timestamp, tgt_idx, graph, hypergraph_list)
+            pred = model(tgt, tgt_timestamp, tgt_idx)
 
             # 计算损失和正确预测的数量
             loss, n_correct = self.get_performance(loss_func, pred, gold)
@@ -115,7 +117,7 @@ class BaseRunner(object):
         # 返回平均损失和准确率
         return total_loss / n_total_users, n_total_correct / n_total_users
 
-    def test_epoch(self, model, validation_data, graph, hypergraph_list, k_list=[10, 20, 50, 100]):
+    def test_epoch(self, model, validation_data, k_list=[10, 20, 50, 100]):
         """ Epoch operation in evaluation phase """
         model.eval()
 
@@ -132,7 +134,7 @@ class BaseRunner(object):
                 y_gold = tgt[:, 1:].contiguous().view(-1).detach().cpu().numpy()
 
                 # forward
-                pred = model(tgt, tgt_timestamp, tgt_idx, graph, hypergraph_list)
+                pred = model(tgt, tgt_timestamp, tgt_idx)
                 y_pred = pred.detach().cpu().numpy()
 
                 metric = Metrics()

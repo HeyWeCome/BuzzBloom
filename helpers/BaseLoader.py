@@ -127,6 +127,8 @@ class BaseLoader(object):
         logging.info(f"User size: {self.user_num - 2}")  # Print user count excluding special markers
         logging.info(f"Cascade size: {self.cas_num}")
 
+        self.cascades = cascades
+        self.timestamps = timestamps
         return user_count, cascades, timestamps, train_set, valid_set, test_set  # Return counts and split data
 
     def build_index(self, data):

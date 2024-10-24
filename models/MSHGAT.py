@@ -5,6 +5,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
+from layers import GraphBuilder
 from utils import Constants
 from torch.autograd import Variable
 from layers.Commons import HierarchicalGNNWithAttention, GraphNN, Fusion
@@ -27,6 +28,11 @@ class MSHGAT(nn.Module):
         self.pos_dim = args.pos_dim  # Dimension for positional encoding, in the original implement is 8.
         self.dropout = nn.Dropout(args.dropout)  # Dropout layer to prevent overfitting
         self.initial_feature = args.d_model  # Size of initial features
+
+        self.relation_graph = GraphBuilder.build_friendship_network(data_loader)  # load friendship network
+        self.hyper_graph_list = GraphBuilder.build_diff_hyper_graph_list(data_loader.cascades,
+                                                                         data_loader.timestamps,
+                                                                         data_loader.user_num)  # load hypergraph list
 
         # Initialize components of the model
         self.diff_gnn = HierarchicalGNNWithAttention(self.initial_feature,
@@ -52,7 +58,10 @@ class MSHGAT(nn.Module):
         for weight in self.parameters():
             weight.data.uniform_(-std, std)
 
-    def forward(self, tgt, tgt_timestamp, tgt_idx, graph, hypergraph_list):
+    def forward(self, tgt, tgt_timestamp, tgt_idx):
+        graph = self.relation_graph
+        hypergraph_list = self.hyper_graph_list
+
         tgt = tgt[:, :-1]  # Remove the last object from the tgt. [bth, max_len] -> [bth, max_len - 1]
         tgt_timestamp = tgt_timestamp[:, :-1]  # Remove last timestamp. [bth, max_len] -> [bth, max_len - 1]
 
