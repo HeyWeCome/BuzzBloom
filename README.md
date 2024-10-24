@@ -13,7 +13,7 @@
 
 **Currently integrated models**:
 
-| **Model Name** | **Title**                                                                                                           | **Paper Link**                                                    | **Publication** |
+| **Model** | **Title**                                                                                                           | **Link**                                                    | **Publication** |
 |----------------|---------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------|------------------|
 | DyHGCN         | DyHGCN: A Dynamic Heterogeneous Graph Convolutional Network to Learn Users' Dynamic Preferences for Information Diffusion Prediction | [View Paper](https://dl.acm.org/doi/10.1007/978-3-030-67664-3_21) | ECML PKDD 2020  |
 | MS-HGAT        | MS-HGAT: Memory-Enhanced Sequential Hypergraph Attention Network for Information Diffusion Prediction | [View Paper](https://ojs.aaai.org/index.php/AAAI/article/view/20334) | AAAI-22         |
