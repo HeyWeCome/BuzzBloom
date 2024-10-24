@@ -74,13 +74,13 @@ class GraphNN(nn.Module):
         graph_edge_index = graph.edge_index.cuda()
 
         # 从嵌入层获取初始节点嵌入
-        graph_x_embeddings = self.gnn1(self.embedding.weight, graph_edge_index)
+        graph_x_embeddings = self.gnn1(self.embedding.weight, graph_edge_index)  # [n_nodes, input_dim*2]
 
         # 对嵌入应用丢弃
         graph_x_embeddings = self.dropout(graph_x_embeddings)
 
         # 通过第二个图卷积层处理嵌入
-        graph_output = self.gnn2(graph_x_embeddings, graph_edge_index)
+        graph_output = self.gnn2(graph_x_embeddings, graph_edge_index)  # [n_nodes, input_dim]
 
         # 如果指定，应用批归一化
         if self.is_norm:
