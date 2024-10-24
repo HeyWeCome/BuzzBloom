@@ -26,58 +26,72 @@ class BaseRunner(object):
 
         validation_history = 0.0
         best_scores = {}
+        epochs_without_improvement = 0  # 用于记录没有提升的epoch数量
+
         for epoch_i in range(args.epoch):
             logging.info(f'\n[ Epoch {epoch_i} ]')
             start = time.time()
-            train_loss, train_accu = self.train_epoch(model,
-                                                      train_data,
-                                                      loss_func,
-                                                      optimizer)
+
+            # 训练模型
+            train_loss, train_accu = self.train_epoch(model, train_data, loss_func, optimizer)
             logging.info(
                 f'  \n- (Training)   '
                 f'Loss: {train_loss:8.5f} | '
                 f'Accuracy: {100 * train_accu:3.3f}% | '
                 f'Elapsed: {(time.time() - start) / 60:3.3f} min')
 
-            if epoch_i >= 0:
-                start = time.time()
-                scores = self.test_epoch(model, valid_data)
-                logging.info('\n  - (Validation)')
+            # 每个 epoch 结束后，用验证集进行评估
+            start = time.time()
+            validation_scores = self.test_epoch(model, valid_data)
+            logging.info('\n  - (Validation)')
 
-                # Print metrics in a structured format
-                logging.info(f"{'Metric':<15} {'Score':<20}")
-                logging.info('-' * 35)  # Separator line
-                for metric, score in scores.items():
-                    logging.info(f"{metric:<15} {score:<20.6f}")
+            logging.info(f"{'Metric':<15} {'Score':<20}")
+            logging.info('-' * 35)  # 分割线
+            for metric, score in validation_scores.items():
+                logging.info(f"{metric:<15} {score:<20.6f}")
 
-                logging.info(f'Validation use time: {(time.time() - start) / 60:.3f} min')
+            logging.info(f'Validation use time: {(time.time() - start) / 60:.3f} min')
 
-                logging.info('\n  - (Test)')
-                scores = self.test_epoch(model, test_data)
+            # 检查验证集上的分数是否有提升
+            current_validation_score = sum(validation_scores.values())
+            if current_validation_score > validation_history:
+                # 如果有提升，则保存模型并重置无提升计数器
+                logging.info(f"\nBest Validation at Epoch: {epoch_i}, model has been saved.")
+                validation_history = current_validation_score
+                best_scores = validation_scores
+                torch.save(model.state_dict(), args.model_path)
+                epochs_without_improvement = 0  # 重置计数器
+            else:
+                # 如果没有提升，则增加无提升计数器
+                epochs_without_improvement += 1
+                logging.info(f"No improvement in validation score for {epochs_without_improvement} epochs.")
 
-                logging.info(f"{'Metric':<15} {'Score':<20}")
-                logging.info('-' * 35)  # Separator line
-                for metric, score in scores.items():
-                    logging.info(f"{metric:<15} {score:<20.6f}")
+            # 提前终止条件检查
+            if epochs_without_improvement >= self.patience:
+                logging.info(f"\nEarly stopping triggered after {epoch_i + 1} epochs.")
+                break
 
-                if validation_history <= sum(scores.values()):
-                    logging.info(
-                        f"\nBest Validation at Epoch: {epoch_i}, model has been saved.")
-                    validation_history = sum(scores.values())
-                    best_scores = scores
-                    torch.save(model.state_dict(), args.model_path)
+        # 训练完成或提前终止后，用测试集进行最终评估
+        logging.info('\n  - (Final Test)')
+        test_scores = self.test_epoch(model, test_data)
 
-        logging.info("\n- (Finished!!) \nBest scores:")
         logging.info(f"{'Metric':<15} {'Score':<20}")
-        logging.info('-' * 35)  # Separator line
+        logging.info('-' * 35)  # 分割线
+        for metric, score in test_scores.items():
+            logging.info(f"{metric:<15} {score:<20.6f}")
+
+        logging.info("\n- (Finished!!) \nBest validation scores:")
+        logging.info(f"{'Metric':<15} {'Score':<20}")
+        logging.info('-' * 35)  # 分割线
         for metric, score in best_scores.items():
             logging.info(f"{metric:<15} {score:<20.6f}")
+
 
     def train_epoch(self, model, training_data, loss_func, optimizer):
         # 设置模型为训练模式
         model.train()
 
-        # 初始化总损失、总词数和总正确预测数
+        # 初始化总损失、总用户和总正确预测数
         total_loss = 0.0
         n_total_users = 0.0
         n_total_correct = 0.0
