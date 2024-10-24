@@ -129,6 +129,9 @@ class BaseLoader(object):
 
         self.cascades = cascades
         self.timestamps = timestamps
+        self.train_data = train_set
+        self.valid_data = valid_set
+        self.test_data = test_set
         return user_count, cascades, timestamps, train_set, valid_set, test_set  # Return counts and split data
 
     def build_index(self, data):
