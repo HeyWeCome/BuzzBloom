@@ -62,7 +62,7 @@ class MSHGAT(nn.Module):
         memory_emb_list = self.diff_gnn(hidden, hypergraph_list)  # {7}
 
         # Create a mask for padding
-        mask = (tgt == Constants.PAD)  # [bth, max_len - 1]
+        mask = (tgt == Constants.PAD).cuda()  # [bth, max_len - 1]
         # Prepare positional encoding
         batch_t = torch.arange(tgt.size(1)).expand(tgt.size()).cuda()  # [bth, max_len - 1]
         order_embed = self.dropout(self.pos_embedding(batch_t))  # Positional embeddings [bth, max_len - 1, pos_dim]
@@ -133,7 +133,7 @@ class MSHGAT(nn.Module):
         diff_att_out = self.decoder_attention1(diff_embed,
                                                diff_embed,
                                                diff_embed,
-                                               mask)  # [bth, max_len-1, pos_dim+hidden_size]
+                                               mask=mask)  # [bth, max_len-1, pos_dim+hidden_size]
         diff_att_out = self.dropout(diff_att_out.cuda())  # Dropout on attention output
 
         fri_att_out = self.decoder_attention2(fri_embed,

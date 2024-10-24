@@ -73,7 +73,7 @@ class BaseRunner(object):
 
     def train_epoch(self, model, training_data, graph, hypergraph_list, loss_func, optimizer):
         # 设置模型为训练模式
-        model.run()
+        model.train()
 
         # 初始化总损失、总词数和总正确预测数
         total_loss = 0.0
@@ -115,7 +115,7 @@ class BaseRunner(object):
         # 返回平均损失和准确率
         return total_loss / n_total_users, n_total_correct / n_total_users
 
-    def test_epoch(self, model, validation_data, graph, hypergraph_list, k_list=[10, 50, 100]):
+    def test_epoch(self, model, validation_data, graph, hypergraph_list, k_list=[10, 20, 50, 100]):
         """ Epoch operation in evaluation phase """
         model.eval()
 
