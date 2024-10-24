@@ -99,10 +99,10 @@ class BaseRunner(object):
         # 使用 tqdm 包装 training_data 以显示训练进度
         for batch in tqdm(training_data, desc="Training Epoch", ncols=100):
             # 将批次中的数据移动到 GPU（如果可用）
-            tgt, tgt_timestamp, tgt_idx = (item.cuda() for item in batch)
+            history_seq, history_seq_timestamp, history_seq_idx = (item.cuda() for item in batch)
 
-            # gold 是目标序列，去掉了序列的第一个元素
-            gold = tgt[:, 1:]
+            # gold 是真实标签，取出 history_seq 从第 1 个位置开始的所有元素，省略第 0 个元素
+            gold = history_seq[:, 1:]
 
             # 计算当前批次中非填充的用户数量
             n_users = gold.data.ne(Constants.PAD).sum().float()
@@ -112,7 +112,9 @@ class BaseRunner(object):
             optimizer.zero_grad()
 
             # 使用模型进行预测
-            pred = model(tgt, tgt_timestamp, tgt_idx)
+            input_seq = history_seq[:, :-1]
+            input_seq_timestamp = history_seq_timestamp[:, :-1]
+            pred = model(input_seq, input_seq_timestamp, history_seq_idx)
 
             # 计算损失和正确预测的数量
             loss, n_correct = self.get_performance(loss_func, pred, gold)

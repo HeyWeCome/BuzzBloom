@@ -55,7 +55,6 @@ class DyHGCN(nn.Module):
         init.xavier_normal_(self.linear.weight)
 
     def forward(self, input, input_timestamp, tgt_idx):
-        input = input[:, :-1]
         mask = (input == Constants.PAD)
 
         batch_t = torch.arange(input.size(1)).expand(input.size()).cuda()

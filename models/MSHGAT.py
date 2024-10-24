@@ -58,12 +58,9 @@ class MSHGAT(nn.Module):
         for weight in self.parameters():
             weight.data.uniform_(-std, std)
 
-    def forward(self, tgt, tgt_timestamp, tgt_idx):
+    def forward(self, input_seq, input_seq_timestamp, tgt_idx):
         graph = self.relation_graph
         hypergraph_list = self.hyper_graph_list
-
-        tgt = tgt[:, :-1]  # Remove the last object from the tgt. [bth, max_len] -> [bth, max_len - 1]
-        tgt_timestamp = tgt_timestamp[:, :-1]  # Remove last timestamp. [bth, max_len] -> [bth, max_len - 1]
 
         # Get hidden representations from friendship network
         hidden = self.dropout(self.fri_gnn(graph))  # fri_gnn([2, edges_num]) -> [n_nodes, hidden_dim]
@@ -71,14 +68,14 @@ class MSHGAT(nn.Module):
         memory_emb_list = self.diff_gnn(hidden, hypergraph_list)  # {7}
 
         # Create a mask for padding
-        mask = (tgt == Constants.PAD).cuda()  # [bth, max_len - 1]
+        mask = (input_seq == Constants.PAD).cuda()  # [bth, max_len - 1]
         # Prepare positional encoding
-        batch_t = torch.arange(tgt.size(1)).expand(tgt.size()).cuda()  # [bth, max_len - 1]
+        batch_t = torch.arange(input_seq.size(1)).expand(input_seq.size()).cuda()  # [bth, max_len - 1]
         order_embed = self.dropout(self.pos_embedding(batch_t))  # Positional embeddings [bth, max_len - 1, pos_dim]
-        batch_size, max_len = tgt.size()  # Get batch size and max length
+        batch_size, max_len = input_seq.size()  # Get batch size and max length
 
         # Initialize variables for dynamic and cascade embeddings
-        zero_vec = torch.zeros_like(tgt)  # Vector of zeros for masking [bth, max_len-1]
+        zero_vec = torch.zeros_like(input_seq)  # Vector of zeros for masking [bth, max_len-1]
         dyemb = torch.zeros(batch_size, max_len,
                             self.hidden_size).cuda()  # Dynamic embeddings [bth, max_len - 1, hidden_size]
         cas_emb = torch.zeros(batch_size, max_len,
@@ -88,13 +85,13 @@ class MSHGAT(nn.Module):
         for ind, time in enumerate(sorted(memory_emb_list.keys())):
             if ind == 0:
                 # For the first timestamp, select inputs based on the current time
-                sub_input = torch.where(tgt_timestamp <= time, tgt, zero_vec)  # [bth, max_len-1]
+                sub_input = torch.where(input_seq_timestamp <= time, input_seq, zero_vec)  # [bth, max_len-1]
                 sub_emb = F.embedding(sub_input.cuda(), hidden.cuda())  # [bth, max_len-1, hidden_size]
                 temp = sub_input == 0  # Create a mask for zero input, [bth, max_len-1]
                 sub_cas = sub_emb.clone()  # Initialize cascade embeddings [bth, max_len-1, hidden_size]
             else:
                 # For subsequent timestamps, compare current and previous inputs
-                cur = torch.where(tgt_timestamp <= time, tgt, zero_vec) - sub_input
+                cur = torch.where(input_seq_timestamp <= time, input_seq, zero_vec) - sub_input
                 temp = cur == 0  # Mask for current input
 
                 sub_cas = torch.zeros_like(cur)  # Initialize cascade embedding
@@ -114,7 +111,7 @@ class MSHGAT(nn.Module):
 
             if ind == len(memory_emb_list) - 1:
                 # For the last timestamp, finalize the embeddings
-                sub_input = tgt - sub_input  # Calculate remaining input
+                sub_input = input_seq - sub_input  # Calculate remaining input
                 temp = sub_input == 0  # Mask for remaining input
 
                 sub_cas = torch.zeros_like(sub_input)  # Initialize for last input
@@ -134,7 +131,7 @@ class MSHGAT(nn.Module):
         diff_embed = torch.cat([dyemb, order_embed], dim=-1).cuda()  # [bth, max_len-1, pos_dim+hidden_size]
         # Concatenate user embeddings with positional encoding
         fri_embed = torch.cat(
-            [F.embedding(tgt.cuda(),
+            [F.embedding(input_seq.cuda(),
                          hidden.cuda()),
              order_embed], dim=-1).cuda()  # [bth, max_len-1, pos_dim+hidden_size]
 
@@ -156,9 +153,9 @@ class MSHGAT(nn.Module):
 
         # Combine user and cascade outputs
         output_u = self.linear2(att_out.cuda())  # [bth, max_len-1, node_num]
-        mask = self.get_previous_user_mask(tgt.cpu(), self.n_node)  # Get user mask
+        mask = self.get_previous_user_mask(input_seq.cpu(), self.n_node)  # Get user mask
 
-        return (output_u + mask).view(-1, output_u.size(-1)).cuda()  # [bth * max_len-1, node_num]
+        return (output_u + mask).view(-1, output_u.size(-1))  # [bth * max_len-1, node_num]
 
     def get_previous_user_mask(self, seq, user_size):
         """ Mask previous activated users."""
