@@ -73,7 +73,7 @@ def main(model_class):
 
 if __name__ == '__main__':
     init_parser = argparse.ArgumentParser(description='Model')
-    init_parser.add_argument('--model_name', type=str, default='MSHGAT', help='Choose a model to run.')
+    init_parser.add_argument('--model_name', type=str, default='DyHGCN', help='Choose a model to run.')
     init_args, init_extras = init_parser.parse_known_args()
 
     # Dynamically import the specified model module
