@@ -85,7 +85,7 @@ class BaseLoader(object):
                     current_timestamps.append(float(timestamp))  # Append timestamp
 
             # Filter cascades based on user count
-            if 1 <= len(current_users):
+            if 1 <= len(current_users) <= 500:
                 if with_eos:
                     current_users.append(Constants.EOS)  # Append end-of-sequence marker
                     current_timestamps.append(Constants.EOS)
@@ -211,7 +211,7 @@ class DataLoader(object):
         def pad_to_longest(insts):
             """ 将实例填充到批处理中最长序列长度 """
 
-            max_len = 200  # 设置最大序列长度
+            max_len = 500  # 设置最大序列长度
 
             # 对每个实例进行填充或截断
             inst_data = np.array([

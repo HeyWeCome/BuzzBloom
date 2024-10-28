@@ -115,123 +115,156 @@ def build_hyper_diff_graph(cascades, timestamps, user_size):
 
 
 def build_dynamic_heterogeneous_graph(dataloader, time_step_split):
-    _u2idx = {}
-    _idx2u = []
+    # 初始化两个字典用于存储用户和索引的映射关系
+    _u2idx = {}  # 用户到索引的映射
+    _idx2u = []  # 索引到用户的映射
 
+    # 从dataloader中加载用户到索引的映射字典
     with open(dataloader.u2idx_dict, 'rb') as handle:
-        _u2idx = pickle.load(handle)
-    with open(dataloader.idx2u_dict, 'rb') as handle:
-        _idx2u = pickle.load(handle)
+        _u2idx = pickle.load(handle)  # 反序列化用户到索引的映射字典
 
-    follow_relation = []  # directed relation
+    # 从dataloader中加载索引到用户的映射字典
+    with open(dataloader.idx2u_dict, 'rb') as handle:
+        _idx2u = pickle.load(handle)  # 反序列化索引到用户的映射字典
+
+    follow_relation = []  # 用于存储关注关系的列表（有向关系）
+
+    # 检查社交网络数据文件是否存在，friendship关系
     if os.path.exists(dataloader.net_data):
         with open(dataloader.net_data, 'r') as handle:
+            # 读取网络数据中的所有边，并去除前后空白符
             edges_list = handle.read().strip().split("\n")
-            edges_list = [edge.split(',') for edge in edges_list]
+            edges_list = [edge.split(',') for edge in edges_list]  # 每条边通过逗号分隔成节点对
+            # 将用户ID转换为索引，构建关注关系的元组列表
             follow_relation = [(_u2idx[edge[0]], _u2idx[edge[1]]) for edge in edges_list if
                                edge[0] in _u2idx and edge[1] in _u2idx]
 
+    # 加载动态扩散图（例如信息传播图），返回一个以时间步为键的字典，每个时间步对应一个图的邻接列表形式
     dy_diff_graph_list = load_dynamic_diffusion_graph(dataloader, time_step_split)
-    dynamic_graph = dict()
-    for x in sorted(dy_diff_graph_list.keys()):
-        edges_list = follow_relation
-        edges_type_list = [0] * len(follow_relation)  # 0:follow relation,  1:repost relation
-        edges_weight = [1.0] * len(follow_relation)
-        for key, value in dy_diff_graph_list[x].items():
-            edges_list.append(key)
-            edges_type_list.append(1)
-            edges_weight.append(sum(value))
 
+    dynamic_graph = dict()  # 初始化用于存储动态图的字典
+
+    # 按时间步的顺序遍历扩散图
+    for x in sorted(dy_diff_graph_list.keys()):
+        # 初始化当前时间步的边列表，初始为关注关系
+        edges_list = follow_relation
+        edges_type_list = [0] * len(follow_relation)  # 关注关系的类型标记为0
+        edges_weight = [1.0] * len(follow_relation)  # 关注关系的权重初始化为1.0
+
+        # 将扩散图中的重发关系添加到当前时间步的边列表中
+        for key, value in dy_diff_graph_list[x].items():
+            edges_list.append(key)  # 将扩散关系的边添加到边列表
+            edges_type_list.append(1)  # 重发关系的类型标记为1
+            edges_weight.append(sum(value))  # 将权重计算为该重发关系的值之和
+
+        # 将边列表转换为张量，并进行转置，使得其适合图数据结构的要求
         edges_list_tensor = torch.LongTensor(edges_list).t()
+        # 转换边类型和权重为张量
         edges_type = torch.LongTensor(edges_type_list)
         edges_weight = torch.FloatTensor(edges_weight)
 
+        # 使用PyTorch Geometric库构建图数据对象
         data = Data(edge_index=edges_list_tensor, edge_type=edges_type, edge_weight=edges_weight)
+        # 将当前时间步的图数据添加到动态图中
         dynamic_graph[x] = data
+
+    # 返回构建好的动态图字典
     return dynamic_graph
 
 
 def load_dynamic_diffusion_graph(dataloader, time_step_split):
     """
-    Notice: we remove the code that repeated the construction of diffusion graphs with a different list-based format.
-    :param dataloader:
-    :param time_step_split:
-    :return:
+    构建动态扩散图（例如信息传播图）。
+    :param dataloader: 提供数据的加载器，包含用户映射和训练数据。
+    :param time_step_split: 时间步的划分数量，用于确定时间步长。
+    :return: 包含各个时间步的动态扩散图字典。
     """
-    # Initialize dictionaries for user-to-index and index-to-user mappings
-    _u2idx = {}
-    _idx2u = []
+    # 初始化两个字典，用于存储用户到索引的映射关系
+    _u2idx = {}  # 用户到索引的映射
+    _idx2u = []  # 索引到用户的映射
 
-    # Load pre-existing user-to-index and index-to-user mappings from pickled files
+    # 从dataloader中加载用户到索引和索引到用户的映射字典
     with open(dataloader.u2idx_dict, 'rb') as handle:
-        _u2idx = pickle.load(handle)
+        _u2idx = pickle.load(handle)  # 反序列化用户到索引的映射字典
     with open(dataloader.idx2u_dict, 'rb') as handle:
-        _idx2u = pickle.load(handle)
+        _idx2u = pickle.load(handle)  # 反序列化索引到用户的映射字典
 
-    # Extract cascades and their corresponding timestamps from training data
+    # 从训练数据中提取级联信息及其对应的时间戳
     cascades, timestamps, _ = dataloader.train_data
 
-    # Initialize an empty list to store user interaction pairs with timestamps
+    # 初始化一个列表，用于存储用户交互对及其时间戳
     t_cascades = []
 
-    # Iterate over each cascade and its corresponding timestamps
+    # 遍历每一个级联及其对应的时间戳
     for cascade, timestamp in zip(cascades, timestamps):
-        # Create a list of user-timestamp pairs for each cascade
+        # 为每个级联创建一个用户-时间戳对的列表
         userlist = list(zip(cascade, timestamp))
 
-        # Create pairs of consecutive users along with the interaction time
+        # 创建连续用户对及其交互时间（例如，[用户A, 用户B, 时间]）
+        """
+        如果：userlist为[(用户A, 时间1), (用户B, 时间2), (用户C, 时间3)]
+        那么 zip(userlist[:-1], userlist[1:]) 会配对出：
+        [(用户A, 时间1), (用户B, 时间2)]
+        [(用户B, 时间2), (用户C, 时间3)]
+        pair_user 中保存的就是这些配对中的用户及其发生交互的时间，结果为：
+        [(用户A, 用户B, 时间2), (用户B, 用户C, 时间3)]
+        
+        其中，用户A 和 用户B 之间的交互发生在 时间2，用户B 和 用户C 之间的交互发生在 时间3。
+        这个操作的目的是基于时间顺序连接级联中的连续用户对，从而捕捉用户之间的信息传播过程。
+        """
         pair_user = [(i[0], j[0], j[1]) for i, j in zip(userlist[:-1], userlist[1:])]
 
-        # Consider only cascades with more than 1 pair and fewer than or equal to 500 pairs
-        # Keep the original Setting.
+        # 仅考虑长度在2到500之间的级联（即至少有1对用户交互，最多500对）
         if len(pair_user) > 1 and len(pair_user) <= 500:
-            t_cascades.extend(pair_user)
+            t_cascades.extend(pair_user)  # 将符合条件的用户对添加到总的级联列表中
 
-    # Convert the list of user interaction pairs into a pandas DataFrame
+    # 将用户交互对列表转换为pandas DataFrame
     t_cascades_pd = pd.DataFrame(t_cascades, columns=["user1", "user2", "timestamp"])
 
-    # Sort the interactions based on timestamp
+    # 根据时间戳对用户交互进行排序
     t_cascades_pd = t_cascades_pd.sort_values(by="timestamp")
 
-    # Calculate the total number of interactions and the length of each time step
-    t_cascades_length = t_cascades_pd.shape[0]
-    step_length_x = t_cascades_length // time_step_split
+    # 计算交互对的总数量，并根据时间步划分数量计算每个时间步的长度
+    t_cascades_length = t_cascades_pd.shape[0]  # 总交互数
+    step_length_x = t_cascades_length // time_step_split  # 每个时间步的长度
 
-    # Dictionary to store cascades in different time steps
+    # 初始化字典，用于存储每个时间步的级联交互对
     t_cascades_list = dict()
 
-    # Slice the data into time steps and extract the relevant user interactions
+    # 按照时间步划分数据，并提取对应的用户交互对
     for x in range(step_length_x, t_cascades_length - step_length_x, step_length_x):
-        # Subset of data up to the current time step
+        # 获取当前时间步的数据子集
         t_cascades_pd_sub = t_cascades_pd[:x]
 
-        # Extract pairs of users for the current time slice
+        # 提取当前时间片中的用户对
         t_cascades_sub_list = t_cascades_pd_sub.apply(lambda x: (x["user1"], x["user2"]), axis=1).tolist()
 
-        # Get the maximum timestamp for this subset
+        # 获取该子集的最大时间戳，作为该时间步的标识
         sub_timesas = t_cascades_pd_sub["timestamp"].max()
 
-        # Store the user interaction pairs under the corresponding timestamp
+        # 将用户对存储在对应的时间步中
         t_cascades_list[sub_timesas] = t_cascades_sub_list
 
-    # Handle the last time step (which includes all interactions)
+    # 处理最后一个时间步（包括所有的交互对）
     t_cascades_sub_list = t_cascades_pd.apply(lambda x: (x["user1"], x["user2"]), axis=1).tolist()
     sub_timesas = t_cascades_pd["timestamp"].max()
     t_cascades_list[sub_timesas] = t_cascades_sub_list
 
-    # Initialize a dictionary to store the dynamic diffusion graph at each time step
+    # 初始化一个字典，用于存储每个时间步的动态扩散图
     dynamic_graph_dict_list = dict()
 
-    # Iterate through sorted timestamps and construct the diffusion graph
+    # 遍历所有的时间步，按时间戳顺序构建扩散图
     for key in sorted(t_cascades_list.keys()):
-        edges_list = t_cascades_list[key]
+        edges_list = t_cascades_list[key]  # 当前时间步的用户对列表
 
-        # Create a dictionary to track interactions between user pairs
+        # 创建一个字典，用于记录用户对之间的交互（例如：[用户A, 用户B]）
         cascade_dic = defaultdict(list)
         for upair in edges_list:
-            cascade_dic[upair].append(1)
+            cascade_dic[upair].append(1)  # 将交互记为1（可能表示一次交互）
 
-        # Store the diffusion graph at the current time step
+        # 存储当前时间步的扩散图
         dynamic_graph_dict_list[key] = cascade_dic
 
+    # 返回构建好的动态扩散图字典，其中每个时间步都对应一个扩散图
     return dynamic_graph_dict_list
+

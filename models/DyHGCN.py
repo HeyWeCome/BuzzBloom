@@ -17,6 +17,7 @@ class DyHGCN(nn.Module):
     """
     Only implement DyHGCN-S, because its performance is better.
     """
+
     @staticmethod
     def parse_model_args(parser):
         parser.add_argument('--pos_dim', type=int, default=8,
@@ -46,7 +47,7 @@ class DyHGCN(nn.Module):
         self.decoder_attention = TransformerBlock(input_size=self.embedding_size + self.pos_dim, n_heads=self.n_heads)
         self.linear = nn.Linear(self.embedding_size + self.pos_dim, self.user_num)
 
-        self.relation_graph = GraphBuilder.build_friendship_network(data_loader)  # load friendship network
+        # self.relation_graph = GraphBuilder.build_friendship_network(data_loader)  # load friendship network
         self.diffusion_graph = GraphBuilder.build_dynamic_heterogeneous_graph(data_loader, self.time_step_split)
         self.init_weights()
 
@@ -54,60 +55,98 @@ class DyHGCN(nn.Module):
         init.xavier_normal_(self.pos_embedding.weight)
         init.xavier_normal_(self.linear.weight)
 
-    def forward(self, input, input_timestamp, tgt_idx):
-        mask = (input == Constants.PAD)
+    def forward(self, input_seq, input_timestamp, tgt_idx):
+        # 截断输入序列的最后一个元素，保留前面的部分，用于后续的预测操作
+        input_seq = input_seq[:, :-1]
+        input_timestamp = input_timestamp[:, :-1]
 
-        batch_t = torch.arange(input.size(1)).expand(input.size()).cuda()
+        # 创建掩码，用于标记填充位置（Constants.PAD）为True，其他位置为False
+        mask = (input_seq == Constants.PAD)
+
+        # 生成批次中的时间步索引，并通过位置嵌入层获取位置嵌入
+        batch_t = torch.arange(input_seq.size(1)).expand(input_seq.size()).cuda()
+        # 对位置嵌入应用dropout，以防止过拟合
         order_embed = self.dropout(self.pos_embedding(batch_t))
 
-        batch_size, max_len = input.size()
+        # 获取批次大小和输入序列的最大长度
+        batch_size, max_len = input_seq.size()
+
+        # 初始化dyemb张量，用于存储动态节点嵌入，尺寸为 (batch_size, max_len, self.user_num)
         dyemb = torch.zeros(batch_size, max_len, self.user_num).cuda()
-        input_timestamp = input_timestamp[:, :-1]
+
+        # 定义时间步长，用于动态嵌入的更新
         step_len = 5
 
-        dynamic_node_emb_dict = self.gnn_diffusion_layer(self.diffusion_graph)  # input, input_timestamp, diffusion_graph)
+        # 计算每个时间步的动态节点嵌入图
+        dynamic_node_emb_dict = self.gnn_diffusion_layer(self.diffusion_graph)
+
+        # 初始化dyemb_timestamp张量，用于存储每个时间步对应的动态嵌入索引
         dyemb_timestamp = torch.zeros(batch_size, max_len).long()
 
+        # 获取动态嵌入字典中所有的时间戳，并创建一个映射字典
         dynamic_node_emb_dict_time = sorted(dynamic_node_emb_dict.keys())
         dynamic_node_emb_dict_time_dict = dict()
         for i, val in enumerate(dynamic_node_emb_dict_time):
             dynamic_node_emb_dict_time_dict[val] = i
+
+        # 获取字典中最新的时间戳
         latest_timestamp = dynamic_node_emb_dict_time[-1]
+
+        # 遍历输入序列的时间步，并为每个时间片段选择合适的动态嵌入
         for t in range(0, max_len, step_len):
             try:
+                # 获取当前时间片段的最大时间戳
                 la_timestamp = torch.max(input_timestamp[:, t:t + step_len]).item()
+                # 如果最大时间戳小于1，说明没有有效的时间戳数据，跳出循环
                 if la_timestamp < 1:
                     break
-                latest_timestamp = la_timestamp
             except Exception:
                 pass
 
+            # 根据时间戳确定在动态嵌入字典中的索引位置
             res_index = len(dynamic_node_emb_dict_time_dict) - 1
             for i, val in enumerate(dynamic_node_emb_dict_time_dict.keys()):
+                # 找到小于或等于最新时间戳的最大索引值
                 if val <= latest_timestamp:
                     res_index = i
                     continue
                 else:
                     break
+            # 将当前时间步的动态嵌入索引更新到dyemb_timestamp中
             dyemb_timestamp[:, t:t + step_len] = res_index
 
+        # 创建一个列表，用于存储每个时间步的用户嵌入
         dyuser_emb_list = list()
         for val in sorted(dynamic_node_emb_dict.keys()):
-            dyuser_emb_sub = F.embedding(input.cuda(), dynamic_node_emb_dict[val].cuda()).unsqueeze(2)
+            # 使用embedding函数从输入序列中获取对应时间步的用户嵌入
+            dyuser_emb_sub = F.embedding(input_seq.cuda(), dynamic_node_emb_dict[val].cuda()).unsqueeze(2)
             dyuser_emb_list.append(dyuser_emb_sub)
+
+        # 将所有时间步的用户嵌入沿第二维拼接，形成完整的用户嵌入张量
         dyuser_emb = torch.cat(dyuser_emb_list, dim=2)
 
+        # 通过时间注意力机制融合不同时间步的用户嵌入
         dyemb = self.time_attention(dyemb_timestamp.cuda(), dyuser_emb.cuda())
+        # 对动态嵌入应用dropout
         dyemb = self.dropout(dyemb)
 
-        final_embed = torch.cat([dyemb, order_embed], dim=-1).cuda()  # dynamic_node_emb
+        # 将动态嵌入和顺序嵌入沿最后一维拼接，形成最终的嵌入表示
+        final_embed = torch.cat([dyemb, order_embed], dim=-1).cuda()
+
+        # 使用decoder_attention模块计算自注意力输出，使用掩码处理填充位置
         att_out = self.decoder_attention(final_embed.cuda(), final_embed.cuda(), final_embed.cuda(), mask=mask.cuda())
+        # 对注意力输出应用dropout
         att_out = self.dropout(att_out.cuda())
 
-        output = self.linear(att_out.cuda())  # (bsz, user_len, |U|)
-        mask = self.get_previous_user_mask(input.cuda(), self.user_num)
+        # 通过线性层将注意力输出转换为最终的输出表示
+        output = self.linear(att_out.cuda())  # (batch_size, user_len, |U|)
+
+        # 获取之前用户的掩码，用于调整输出结果
+        mask = self.get_previous_user_mask(input_seq.cuda(), self.user_num)
+        # 将掩码添加到输出中，进行适当的调整
         output = output.cuda() + mask.cuda()
 
+        # 将输出调整为 (batch_size * user_len, |U|) 的形状并返回
         return output.view(-1, output.size(-1))
 
     def get_previous_user_mask(self, seq, user_size):
@@ -133,3 +172,19 @@ class DyHGCN(nn.Module):
         masked_seq = Variable(masked_seq, requires_grad=False)
         # print("masked_seq ",masked_seq.size())
         return masked_seq.cuda()
+
+    def get_performance(self, input_seq, input_seq_timestamp, history_seq_idx, loss_func, gold):
+        pred = self.forward(input_seq, input_seq_timestamp, history_seq_idx)
+
+        # gold.contiguous().view(-1) : [bth, max_len-1] -> [bth * (max_len-1)]
+        loss = loss_func(pred, gold.contiguous().view(-1))
+
+        # 获取 pred 中每行的最大值的索引，表示模型认为每个时间步最可能的类别,pred.max(1) 返回一个包含最大值和索引的元组，而 [1] 表示取出索引部分。
+        pred = pred.max(1)[1]
+        gold = gold.contiguous().view(-1)  # 将 gold 转换为一维数组，确保它与 pred 的展平形状一致。
+        n_correct = pred.data.eq(gold.data)  # 比较 pred 和 gold，返回一个布尔数组，表示每个位置是否预测正确。
+        # gold.ne(Constants.PAD): 生成一个布尔数组，标记 gold 中不是填充符的部分。
+        # masked_select(...): 只选择有效的（非填充）预测，确保不会将填充位置计入正确预测。
+        # sum().float(): 最后计算正确预测的数量，并将其转换为浮点数。
+        n_correct = n_correct.masked_select(gold.ne(Constants.PAD).data).sum().float()
+        return loss, n_correct

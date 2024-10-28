@@ -112,12 +112,16 @@ class BaseRunner(object):
             optimizer.zero_grad()
 
             # 使用模型进行预测
-            input_seq = history_seq[:, :-1]
-            input_seq_timestamp = history_seq_timestamp[:, :-1]
-            pred = model(input_seq, input_seq_timestamp, history_seq_idx)
+            # input_seq = history_seq[:, :-1]
+            # input_seq_timestamp = history_seq_timestamp[:, :-1]
+            # pred = model(input_seq, input_seq_timestamp, history_seq_idx)
 
             # 计算损失和正确预测的数量
-            loss, n_correct = self.get_performance(loss_func, pred, gold)
+            loss, n_correct = model.get_performance(history_seq,
+                                                    history_seq_timestamp,
+                                                    history_seq_idx,
+                                                    loss_func,
+                                                    gold)
             # 反向传播以计算梯度
             loss.backward()
 
