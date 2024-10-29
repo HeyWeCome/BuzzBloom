@@ -59,6 +59,10 @@ class MSHGAT(nn.Module):
             weight.data.uniform_(-std, std)
 
     def forward(self, input_seq, input_seq_timestamp, tgt_idx):
+        # 截断输入序列的最后一个元素，保留前面的部分，用于后续的预测操作
+        input_seq = input_seq[:, :-1]  # Remove the last object from the tgt
+        input_seq_timestamp = input_seq_timestamp[:, :-1]  # Remove last timestamp
+
         graph = self.relation_graph
         hypergraph_list = self.hyper_graph_list
 
@@ -180,3 +184,19 @@ class MSHGAT(nn.Module):
         masked_seq = Variable(masked_seq, requires_grad=False)
         # print("masked_seq ",masked_seq.size())
         return masked_seq.cuda()
+
+    def get_performance(self, input_seq, input_seq_timestamp, history_seq_idx, loss_func, gold):
+        pred = self.forward(input_seq, input_seq_timestamp, history_seq_idx)
+
+        # gold.contiguous().view(-1) : [bth, max_len-1] -> [bth * (max_len-1)]
+        loss = loss_func(pred, gold.contiguous().view(-1))
+        # 获取 pred 中每行的最大值的索引，表示模型认为每个时间步最可能的类别,pred.max(1) 返回一个包含最大值和索引的元组，而 [1] 表示取出索引部分。
+        pred = pred.max(1)[1]
+        gold = gold.contiguous().view(-1)  # 将 gold 转换为一维数组，确保它与 pred 的展平形状一致。
+        n_correct = pred.data.eq(gold.data)  # 比较 pred 和 gold，返回一个布尔数组，表示每个位置是否预测正确。
+        # gold.ne(Constants.PAD): 生成一个布尔数组，标记 gold 中不是填充符的部分。
+        # masked_select(...): 只选择有效的（非填充）预测，确保不会将填充位置计入正确预测。
+        # sum().float(): 最后计算正确预测的数量，并将其转换为浮点数。
+        n_correct = n_correct.masked_select(gold.ne(Constants.PAD).data).sum().float()
+        return loss, n_correct
+
