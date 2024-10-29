@@ -149,16 +149,18 @@ class BaseRunner(object):
         n_total_words = 0
         with torch.no_grad():
             for batch in tqdm(validation_data, desc="Testing Epoch"):
-                # prepare data
-                tgt, tgt_timestamp, tgt_idx = batch
-                y_gold = tgt[:, 1:].contiguous().view(-1).detach().cpu().numpy()
+                # 将批次中的数据移动到 GPU（如果可用）
+                history_seq, history_seq_timestamp, history_seq_idx = (item.cuda() for item in batch)
+
+                # gold 是真实标签，取出 history_seq 从第 1 个位置开始的所有元素，省略第 0 个元素
+                gold = history_seq[:, 1:].contiguous().view(-1).detach().cpu().numpy()
 
                 # forward
-                pred = model(tgt, tgt_timestamp, tgt_idx)
+                pred = model(history_seq, history_seq_timestamp, history_seq_idx)
                 y_pred = pred.detach().cpu().numpy()
 
                 metric = Metrics()
-                scores_batch, scores_len = metric.compute_metric(y_pred, y_gold, k_list)
+                scores_batch, scores_len = metric.compute_metric(y_pred, gold, k_list)
                 n_total_words += scores_len
                 for k in k_list:
                     scores['hits@' + str(k)] += scores_batch['hits@' + str(k)] * scores_len
