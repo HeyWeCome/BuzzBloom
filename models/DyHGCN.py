@@ -80,7 +80,7 @@ class DyHGCN(nn.Module):
         # 计算每个时间步的动态节点嵌入图
         dynamic_node_emb_dict = self.gnn_diffusion_layer(self.diffusion_graph)
 
-        # 初始化dyemb_timestamp张量，用于存储每个时间步对应的动态嵌入索引
+        # 初始化dyemb_timestamp张量，用于存储每个时间步对应的动态嵌入索引，以便将动态节点嵌入图与输入的时间步对齐
         dyemb_timestamp = torch.zeros(batch_size, max_len).long()
 
         # 获取动态嵌入字典中所有的时间戳，并创建一个映射字典
@@ -93,6 +93,28 @@ class DyHGCN(nn.Module):
         latest_timestamp = dynamic_node_emb_dict_time[-1]
 
         # 遍历输入序列的时间步，并为每个时间片段选择合适的动态嵌入
+        """举例
+        dynamic_node_emb_dict_time_dict = {5: emb_5, 10: emb_10, 15: emb_15}
+            字典中最新的时间戳 latest_timestamp=15
+        input_timestamp = torch.tensor([
+            [3, 6, 8, 9, 14, 16],   # 序列 1 的时间步
+            [1, 4, 7, 12, 13, 17]   # 序列 2 的时间步
+        ])
+        每次处理2个时间步：
+            第一次：torch.tensor([[3, 6], [1, 4]])
+                当前时间片段的最大时间戳 la_timestamp = 6
+                在字典中查找<=6的最大时间戳，即val=5，i=0，res_index=i=0
+            第二次：torch.tensor([[8, 9], [7, 12]])
+                la_timestamp = 12
+                在字典中查找<=12的最大时间戳，即val=10，i=1，res_index=i=1
+            第三次：torch.tensor([[14, 16], [13, 17]])
+                la_timestamp = 17
+                在字典中查找<=17的最大时间戳，即val=15，i=2，res_index=i=2
+        得到dyemb_timestamp = torch.tensor([
+                [0, 0, 1, 1, 2, 2],
+                [0, 0, 1, 1, 2, 2]
+            ])
+        """
         for t in range(0, max_len, step_len):
             try:
                 # 获取当前时间片段的最大时间戳
@@ -103,11 +125,15 @@ class DyHGCN(nn.Module):
             except Exception:
                 pass
 
+            latest_timestamp = la_timestamp # 将当前时间片段的最大时间戳赋给最新时间戳
+
             # 根据时间戳确定在动态嵌入字典中的索引位置
             res_index = len(dynamic_node_emb_dict_time_dict) - 1
+            # 找到小于或等于最新时间戳的最大索引值
             for i, val in enumerate(dynamic_node_emb_dict_time_dict.keys()):
-                # 找到小于或等于最新时间戳的最大索引值
+                # 不断遍历，直至val不再小于等于最新时间戳，跳出循环
                 if val <= latest_timestamp:
+                    # 将每次的idx赋予res_index，当循环结束时，res_index就是小于或等于最新时间戳的最大索引值
                     res_index = i
                     continue
                 else:
@@ -117,12 +143,17 @@ class DyHGCN(nn.Module):
 
         # 创建一个列表，用于存储每个时间步的用户嵌入
         dyuser_emb_list = list()
+        # 每个val代表一个时间步
         for val in sorted(dynamic_node_emb_dict.keys()):
-            # 使用embedding函数从输入序列中获取对应时间步的用户嵌入
-            dyuser_emb_sub = F.embedding(input_seq.cuda(), dynamic_node_emb_dict[val].cuda()).unsqueeze(2)
-            dyuser_emb_list.append(dyuser_emb_sub)
+            # 使用embedding函数从输入序列中获取对应时间步的用户嵌入：
+            # input_seq中的用户ID作为索引，从嵌入矩阵dynamic_node_emb_dict[val]中检索对应的嵌入向量
+            # input_seq：[batch_size, seq_len]; dynamic_node_emb_dict[val]：[num_users, embedding_dim]
+            dyuser_emb_sub = F.embedding(input_seq.cuda(), dynamic_node_emb_dict[val].cuda()).unsqueeze(2)  # [batch_size, seq_len, 1, embedding_dim]
+            dyuser_emb_list.append(dyuser_emb_sub) # [steps, batch_size, seq_len, 1, embedding_dim]
 
         # 将所有时间步的用户嵌入沿第二维拼接，形成完整的用户嵌入张量
+        # 即将dyuser_emb_list里的每个张量[batch_size, seq_len, 1, embedding_dim]沿着第二维拼接起来，
+        # 最终得到[batch_size, seq_len, num_steps, embedding_dim]
         dyuser_emb = torch.cat(dyuser_emb_list, dim=2)
 
         # 通过时间注意力机制融合不同时间步的用户嵌入
