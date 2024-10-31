@@ -57,16 +57,16 @@ class DyHGCN(nn.Module):
 
     def forward(self, input_seq, input_timestamp, tgt_idx):
         # 截断输入序列的最后一个元素，保留前面的部分，用于后续的预测操作
-        input_seq = input_seq[:, :-1]
-        input_timestamp = input_timestamp[:, :-1]
+        input_seq = input_seq[:, :-1]  # [bth, seq_len]
+        input_timestamp = input_timestamp[:, :-1]  # [bth, seq_len]
 
         # 创建掩码，用于标记填充位置（Constants.PAD）为True，其他位置为False
-        mask = (input_seq == Constants.PAD)
+        mask = (input_seq == Constants.PAD)  # [bth, seq_len]
 
         # 生成批次中的时间步索引，并通过位置嵌入层获取位置嵌入
-        batch_t = torch.arange(input_seq.size(1)).expand(input_seq.size()).cuda()
+        batch_t = torch.arange(input_seq.size(1)).expand(input_seq.size()).cuda()  # [bth, seq_len]
         # 对位置嵌入应用dropout，以防止过拟合
-        order_embed = self.dropout(self.pos_embedding(batch_t))
+        order_embed = self.dropout(self.pos_embedding(batch_t))  # [bth, seq_len, pos_dim]
 
         # 获取批次大小和输入序列的最大长度
         batch_size, max_len = input_seq.size()
@@ -78,10 +78,10 @@ class DyHGCN(nn.Module):
         step_len = 5
 
         # 计算每个时间步的动态节点嵌入图
-        dynamic_node_emb_dict = self.gnn_diffusion_layer(self.diffusion_graph)
+        dynamic_node_emb_dict = self.gnn_diffusion_layer(self.diffusion_graph)  # 8个时间段
 
-        # 初始化dyemb_timestamp张量，用于存储每个时间步对应的动态嵌入索引，以便将动态节点嵌入图与输入的时间步对齐
-        dyemb_timestamp = torch.zeros(batch_size, max_len).long()
+        # 初始化dyemb_timestamp张量，用于存储每个时间步对应的动态嵌入索引
+        dyemb_timestamp = torch.zeros(batch_size, max_len).long()  # [bth, seq_len]
 
         # 获取动态嵌入字典中所有的时间戳，并创建一个映射字典
         dynamic_node_emb_dict_time = sorted(dynamic_node_emb_dict.keys())
@@ -122,10 +122,9 @@ class DyHGCN(nn.Module):
                 # 如果最大时间戳小于1，说明没有有效的时间戳数据，跳出循环
                 if la_timestamp < 1:
                     break
+                latest_timestamp = la_timestamp # 将当前时间片段的最大时间戳赋给最新时间戳
             except Exception:
                 pass
-
-            latest_timestamp = la_timestamp # 将当前时间片段的最大时间戳赋给最新时间戳
 
             # 根据时间戳确定在动态嵌入字典中的索引位置
             res_index = len(dynamic_node_emb_dict_time_dict) - 1
@@ -152,25 +151,29 @@ class DyHGCN(nn.Module):
             dyuser_emb_list.append(dyuser_emb_sub) # [steps, batch_size, seq_len, 1, embedding_dim]
 
         # 将所有时间步的用户嵌入沿第二维拼接，形成完整的用户嵌入张量
+
         # 即将dyuser_emb_list里的每个张量[batch_size, seq_len, 1, embedding_dim]沿着第二维拼接起来，
         # 最终得到[batch_size, seq_len, num_steps, embedding_dim]
-        dyuser_emb = torch.cat(dyuser_emb_list, dim=2)
+        dyuser_emb = torch.cat(dyuser_emb_list, dim=2)  # [bth, seq_len, time_step, hidden_size]
 
         # 通过时间注意力机制融合不同时间步的用户嵌入
-        dyemb = self.time_attention(dyemb_timestamp.cuda(), dyuser_emb.cuda())
+        dyemb = self.time_attention(dyemb_timestamp.cuda(), dyuser_emb.cuda())  # [bth, seq_len, hidden_size]
         # 对动态嵌入应用dropout
         dyemb = self.dropout(dyemb)
 
         # 将动态嵌入和顺序嵌入沿最后一维拼接，形成最终的嵌入表示
-        final_embed = torch.cat([dyemb, order_embed], dim=-1).cuda()
+        final_embed = torch.cat([dyemb, order_embed], dim=-1).cuda()  # [bth, seq_len, hidden_size+pos_dim]
 
         # 使用decoder_attention模块计算自注意力输出，使用掩码处理填充位置
-        att_out = self.decoder_attention(final_embed.cuda(), final_embed.cuda(), final_embed.cuda(), mask=mask.cuda())
+        att_out = self.decoder_attention(final_embed.cuda(),
+                                         final_embed.cuda(),
+                                         final_embed.cuda(),
+                                         mask=mask.cuda())  # [batch_size, seq_len, hidden_size+pos_dim]
         # 对注意力输出应用dropout
         att_out = self.dropout(att_out.cuda())
 
         # 通过线性层将注意力输出转换为最终的输出表示
-        output = self.linear(att_out.cuda())  # (batch_size, user_len, |U|)
+        output = self.linear(att_out.cuda())  # (batch_size, seq_len, |U|)
 
         # 获取之前用户的掩码，用于调整输出结果
         mask = self.get_previous_user_mask(input_seq.cuda(), self.user_num)
