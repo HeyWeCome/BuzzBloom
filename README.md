@@ -1,5 +1,7 @@
 ### BuzzBloom 🌼🐝
 
+BuzzBloom is the flexible and useful project for information diffusion prediction. I hope this project will help the community to harness the power of information diffusion and its potential to shape a more connected and engaging digital landscape.
+
 **Buzz**:
 - **Definition**: "Buzz" captures the electrifying rush of news and topics flying through the air, much like the vibrant sound of buzzing bees. 
 - **Implication**: In our context, “buzz” embodies the rapid spread of captivating information across social media and communication channels, fueled by its relevance and the excitement it generates among the public.
