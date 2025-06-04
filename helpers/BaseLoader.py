@@ -67,9 +67,12 @@ class BaseLoader(object):
             chunks = line.strip().split(',')  # Split line data by comma
 
             for chunk in chunks:
+                processed_chunk = chunk.strip()  # 先strip掉chunk两端的空格
+                if not processed_chunk:  # 如果chunk处理后是空字符串，则跳过
+                    continue
                 try:
                     # Handle different formats of user and timestamp data
-                    parts = chunk.split()
+                    parts = processed_chunk.split() # 使用处理过的chunk
                     # Twitter, Douban
                     if len(parts) == 2:  # Format: user timestamp
                         user, timestamp = parts
