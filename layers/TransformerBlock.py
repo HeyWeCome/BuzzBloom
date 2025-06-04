@@ -125,7 +125,7 @@ class TransformerBlock(nn.Module):
         Q_K = torch.einsum("bqd,bkd->bqk", Q, K) / (temperature + episilon)
         if mask is not None:
             pad_mask = mask.unsqueeze(dim=-1).expand(-1, -1, K.size(1))
-            mask = torch.triu(torch.ones(pad_mask.size()), diagonal=1).bool().cuda()
+            mask = torch.triu(torch.ones(pad_mask.size()), diagonal=1).bool()
             mask_ = mask + pad_mask
             Q_K = Q_K.masked_fill(mask_, -2**32+1)
 
