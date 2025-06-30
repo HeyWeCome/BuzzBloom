@@ -77,3 +77,10 @@ def format_arg_str(args, exclude_lst: list, max_len=20) -> str:
                        + value + ' ' * (value_max_len - len(value)) + linesep
     res_str += '=' * horizon_len
     return res_str
+
+def format_float_for_filename(value):
+    """
+    Formats a float into a string suitable for a filename, replacing '.' with '_'.
+    Example: 0.1 -> "0_1", 1e-05 -> "1e-05"
+    """
+    return str(value).replace('.', '_')
