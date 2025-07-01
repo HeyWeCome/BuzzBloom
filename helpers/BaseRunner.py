@@ -4,6 +4,9 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+# Updated AMP imports
+from torch.amp import autocast, GradScaler
+
 from utils import Constants
 from utils.Metrics import Metrics
 from utils.Optim import ScheduledOptim
@@ -17,6 +20,8 @@ class BaseRunner(object):
     def __init__(self, args):
         # Stop training if the validation score doesn't improve for `patience` epochs.
         self.patience = args.patience
+        # Enable Automatic Mixed Precision (AMP) if available and specified in args.
+        self.use_amp = getattr(args, 'use_amp', True)
 
     def run(self, model, train_data, valid_data, test_data, data_loader, args):
         """
@@ -32,6 +37,10 @@ class BaseRunner(object):
         model.to(args.device)
         loss_func.to(args.device)
 
+        # Initialize the gradient scaler for AMP.
+        # It is only enabled when running on a CUDA device and use_amp is True.
+        scaler = GradScaler(enabled=(args.device.type == 'cuda' and self.use_amp))
+
         validation_history = 0.0
         best_scores = {}
         epochs_without_improvement = 0
@@ -40,8 +49,10 @@ class BaseRunner(object):
             logging.info(f'\n[ Epoch {epoch_i} ]')
             start = time.time()
 
-            # Train the model
-            train_loss, train_accu = self.train_epoch(model, train_data, loss_func, optimizer, args.device)
+            # Train the model for one epoch
+            train_loss, train_accu = self.train_epoch(
+                model, train_data, loss_func, optimizer, scaler, args.device
+            )
             logging.info(
                 f'  - (Training)   Loss: {train_loss:8.5f}, '
                 f'Accuracy: {100 * train_accu:3.3f}%, '
@@ -58,7 +69,7 @@ class BaseRunner(object):
             # Check for improvement on the validation set
             current_validation_score = sum(validation_scores.values())
             if current_validation_score > validation_history:
-                logging.info(f'  Best validation score improved. Saving model...')
+                logging.info('  Best validation score improved. Saving model...')
                 validation_history = current_validation_score
                 best_scores = validation_scores
                 torch.save(model.state_dict(), args.model_path)
@@ -80,9 +91,9 @@ class BaseRunner(object):
         logging.info("\n- (Finished!) \nBest validation scores:")
         self.log_scores(best_scores)
 
-    def train_epoch(self, model, training_data, loss_func, optimizer, device):
+    def train_epoch(self, model, training_data, loss_func, optimizer, scaler, device):
         """
-        Performs one epoch of training.
+        Performs one epoch of training with optional Automatic Mixed Precision.
         """
         model.train()
 
@@ -90,14 +101,12 @@ class BaseRunner(object):
         n_total_users = 0.0
         n_total_correct = 0.0
 
-        for batch in tqdm(training_data, desc="  Training", ncols=100, leave=False):
-            # Move batch data to the specified device
-            history_seq, history_seq_timestamp, history_seq_idx = (item.to(device) for item in batch)
+        is_amp_enabled = device.type == 'cuda' and self.use_amp
 
-            # Ground truth is the sequence shifted by one
+        for batch in tqdm(training_data, desc="  Training", ncols=100, leave=False):
+            history_seq, history_seq_timestamp, history_seq_idx = (item.to(device) for item in batch)
             gold = history_seq[:, 1:]
 
-            # Count non-padded users for normalization
             n_users = gold.ne(Constants.PAD).sum().item()
             if n_users == 0:
                 continue
@@ -105,13 +114,21 @@ class BaseRunner(object):
 
             optimizer.zero_grad()
 
-            # Calculate loss and number of correct predictions
-            loss, n_correct = model.get_performance(
-                history_seq, history_seq_timestamp, history_seq_idx, loss_func, gold
-            )
+            # Use autocast for the forward pass, which automatically uses mixed precision.
+            with autocast(device_type=device.type, dtype=torch.float16, enabled=is_amp_enabled):
+                loss, n_correct = model.get_performance(
+                    history_seq, history_seq_timestamp, history_seq_idx, loss_func, gold
+                )
 
-            loss.backward()
-            optimizer.step()
+            # Scale the loss to prevent underflow, then perform backward pass.
+            scaler.scale(loss).backward()
+
+            # Unscales gradients and calls optimizer.step(). Skips step if grads are inf/nan.
+            scaler.step(optimizer)
+
+            # Update the scale for the next iteration.
+            scaler.update()
+
             optimizer.update_learning_rate()
 
             n_total_correct += n_correct.item()
@@ -130,20 +147,20 @@ class BaseRunner(object):
 
         n_total_words = 0
         metric_calculator = Metrics()
+        is_amp_enabled = device.type == 'cuda' and self.use_amp
 
         with torch.no_grad():
             for batch in tqdm(validation_data, desc="  Evaluating", ncols=100, leave=False):
-                # Move batch data to the specified device
                 history_seq, history_seq_timestamp, history_seq_idx = (item.to(device) for item in batch)
-
-                # Ground truth, moved to CPU for metric calculation
                 gold = history_seq[:, 1:].contiguous().view(-1).cpu().numpy()
 
-                # Model forward pass
-                pred = model(history_seq, history_seq_timestamp, history_seq_idx)
-                y_pred = pred.detach().cpu().numpy()
+                # Use autocast for performance and consistency during evaluation. No GradScaler needed.
+                with autocast(device_type=device.type, dtype=torch.float16, enabled=is_amp_enabled):
+                    pred = model(history_seq, history_seq_timestamp, history_seq_idx)
 
-                # Compute metrics for the batch
+                # Cast to float32 before moving to CPU to avoid potential issues.
+                y_pred = pred.detach().to(torch.float32).cpu().numpy()
+
                 scores_batch, scores_len = metric_calculator.compute_metric(y_pred, gold, k_list)
                 if scores_len == 0:
                     continue
