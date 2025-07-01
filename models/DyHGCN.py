@@ -12,11 +12,15 @@ from utils import Constants
 from layers.Commons import DynamicGraphNN, GraphNN, Fusion, TimeAttention
 from layers.TransformerBlock import TransformerBlock
 
+from helpers.BaseLoader import BaseLoader
+from helpers.BaseRunner import BaseRunner
 
 class DyHGCN(nn.Module):
     """
     Only implement DyHGCN-S, because its performance is better.
     """
+    Loader = BaseLoader
+    Runner = BaseRunner
 
     @staticmethod
     def parse_model_args(parser):

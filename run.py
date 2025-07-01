@@ -9,6 +9,8 @@ from torch.utils.data import DataLoader as TorchDataLoader
 from utils import Utils
 from helpers.BaseLoader import BaseLoader, collate_fn
 from helpers.BaseRunner import BaseRunner
+# from helpers.GraphLoader import GraphLoader
+# from helpers.GraphRunner import GraphRunner
 
 
 def parse_global_args(parser):
@@ -29,6 +31,9 @@ def parse_global_args(parser):
     parser.add_argument('--seed', type=int, default=2023, help='Random seed for reproducibility.')
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers for data loading. 0 for main process.')
+    parser.add_argument('--neighbor_sizes', type=int, nargs='+', default=[15, 10, 5],
+                        help='Number of neighbors to sample for each layer. '
+                             'Required by GraphLoader/NeighborLoader.')
     return parser
 
 
@@ -55,39 +60,17 @@ def main(model_class, args):
     args.device = torch.device('cuda') if use_cuda else torch.device('cpu')
     logging.info(f'Device: {args.device}')
 
-    # Load and split data
-    data_loader = BaseLoader(args)
-    user_size, _, _, train_dataset, valid_dataset, test_dataset = data_loader.split_data(
-        args.train_rate,
-        args.valid_rate,
-        load_dict=True
-    )
+    # --- Dynamic choose loader and runner ---
+    LoaderClass = getattr(model_class, 'Loader', BaseLoader)
+    RunnerClass = getattr(model_class, 'Runner', BaseRunner)
+    logging.info(f"Using Loader: {LoaderClass.__name__}")
+    logging.info(f"Using Runner: {RunnerClass.__name__}")
 
-    # Create data loaders for each set
-    train_data = TorchDataLoader(
-        dataset=train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=use_cuda,
-        collate_fn=collate_fn
-    )
-    valid_data = TorchDataLoader(
-        dataset=valid_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=use_cuda,
-        collate_fn=collate_fn
-    )
-    test_data = TorchDataLoader(
-        dataset=test_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=use_cuda,
-        collate_fn=collate_fn
-    )
+    data_loader = LoaderClass(args)
+    runner = RunnerClass(args)
+
+    # Call a unified interface, the specific implementation is determined by LoaderClass
+    train_data, valid_data, test_data = data_loader.get_dataloaders(args)
 
     # Prepare model
     model = model_class(args, data_loader)
@@ -103,8 +86,8 @@ def main(model_class, args):
         logging.warning("PyTorch version is less than 2.0.0. Skipping model compilation.")
 
     # Initialize runner and start training
-    runner = BaseRunner(args)
-    runner.run(model, train_data, valid_data, test_data, args)
+    run_args = (model, train_data, valid_data, test_data, data_loader, args)
+    runner.run(*run_args)
 
     logging.info('-' * 45 + ' END: ' + Utils.get_time() + ' ' + '-' * 45)
 

@@ -7,19 +7,21 @@ import torch.nn.functional as F
 from torch.nn import init
 
 from layers import GraphBuilder  # Assuming this is correctly in your layers directory
-import \
-    scipy.sparse as ss  # NOTE: This import was missing in your original snippet for _con_hyper_graph. I'm adding it here as it's essential. If you strictly want NO other changes, remove this and the NameError for 'ss' will persist.
+import scipy.sparse as ss
 from utils import Constants
 from torch.autograd import Variable
 from layers.Commons import DynamicGraphNN, GraphNN, Fusion, TimeAttention, ConvBlock  # ConvBlock is used
 from layers.TransformerBlock import TransformerBlock
-
+from helpers.BaseLoader import BaseLoader
+from helpers.BaseRunner import BaseRunner
 
 class DisenIDP(nn.Module):
     """
     Enhancing Information Diffusion Prediction with Self-Supervised Disentangled User and Cascade Representations
     Proceedings of the 32nd ACM International Conference on Information and Knowledge Management (CIKM), 2023
     """
+    Loader = BaseLoader
+    Runner = BaseRunner
 
     @staticmethod
     def parse_model_args(parser):
@@ -45,9 +47,12 @@ class DisenIDP(nn.Module):
         self.beta = args.beta
         self.beta2 = args.beta2
 
+        train_cascades = data_loader.train_set.cascades
+        train_timestamps = data_loader.train_set.timestamps
+
         self.hyper_graphs = self._con_hyper_graph(self.n_node,
-                                                  data_loader.train_data[0],
-                                                  data_loader.timestamps,
+                                                  train_cascades,
+                                                  train_timestamps,
                                                   self.win_size)
         self.n_channel = len(self.hyper_graphs)
         # hypergraph

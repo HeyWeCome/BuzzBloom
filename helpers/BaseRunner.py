@@ -18,7 +18,7 @@ class BaseRunner(object):
         # Stop training if the validation score doesn't improve for `patience` epochs.
         self.patience = args.patience
 
-    def run(self, model, train_data, valid_data, test_data, args):
+    def run(self, model, train_data, valid_data, test_data, data_loader, args):
         """
         Executes the main training and evaluation loop.
         """

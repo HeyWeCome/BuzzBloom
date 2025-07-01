@@ -11,9 +11,14 @@ from utils import Constants  # Make sure Constants.PAD is defined
 from torch.autograd import Variable
 from layers.Commons import HierarchicalGNNWithAttention, GraphNN, Fusion
 from layers.TransformerBlock import TransformerBlock
+from helpers.BaseLoader import BaseLoader
+from helpers.BaseRunner import BaseRunner
 
 
 class MSHGAT(nn.Module):
+    Loader = BaseLoader
+    Runner = BaseRunner
+
     @staticmethod
     def parse_model_args(parser):
         parser.add_argument('--pos_dim', type=int, default=8,
