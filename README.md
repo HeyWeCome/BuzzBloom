@@ -10,3 +10,10 @@ BuzzBloom is the flexible and useful project for information diffusion predictio
 | MS-HGAT        | MS-HGAT: Memory-Enhanced Sequential Hypergraph Attention Network for Information Diffusion Prediction | [Paper](https://ojs.aaai.org/index.php/AAAI/article/view/20334) | AAAI-22         |
 | DisenIDP       | Enhancing Information Diffusion Prediction with Self-Supervised Disentangled User and Cascade Representations | [Paper](https://dl.acm.org/doi/abs/10.1145/3583780.3615230) | CIKM-23         |
 | PMRCA          | A Pattern-Driven Information Diffusion Prediction Model Based on Multisource Resonance and Cognitive Adaptation | [Paper](https://doi.org/10.1145/3726302.3729883) | SIGIR-25         |
+
+
+## ✨ Updates ✨
+
+**🚀 Performance & Modernization Update (2025-07-01)**
+
+This project has been supercharged with the latest features from **PyTorch 2.x** for a massive performance boost! ⚡ We've integrated `torch.compile` to JIT-compile the model, slashing Python overhead and accelerating GPU computations. Additionally, we've enabled **TensorFloat32 (TF32)** to leverage the power of modern NVIDIA GPUs, offering near-FP16 speed with FP32's stability. The data loading pipeline was also refactored using PyTorch's native `DataLoader`, enabling parallel data pre-fetching to keep your GPU fully utilized. Enjoy the new speed! 💨

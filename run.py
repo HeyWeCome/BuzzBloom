@@ -42,6 +42,13 @@ def main(model_class, args):
     Utils.init_seed(seed=args.seed)
     logging.info(Utils.format_arg_str(args, exclude_lst=[]))
 
+    # ====================  Add TF32 setting ====================
+    # Enable TensorFloat32 for better performance on supported GPUs
+    if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8:
+        logging.info("Enabling TensorFloat32 for matrix multiplications.")
+        torch.set_float32_matmul_precision('high')
+    # ====================================================================
+
     # Set device (GPU or CPU)
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     use_cuda = args.gpu and torch.cuda.is_available()
@@ -86,6 +93,14 @@ def main(model_class, args):
     model = model_class(args, data_loader)
     logging.info(f"Model: \n{model}")
     logging.info(f"Total parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+
+    # ====================  Add torch.compile to Speed training ====================
+    if torch.__version__ >= "2.0.0":
+        logging.info("PyTorch 2.0+ detected. Compiling model for performance optimization...")
+        model = torch.compile(model)
+        logging.info("Model compiled successfully.")
+    else:
+        logging.warning("PyTorch version is less than 2.0.0. Skipping model compilation.")
 
     # Initialize runner and start training
     runner = BaseRunner(args)
