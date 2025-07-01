@@ -81,6 +81,9 @@ class BaseLoader(object):
 
     def __init__(self, args):
         # Set file paths based on the dataset name
+        self.test_set = None
+        self.valid_set = None
+        self.train_set = None
         self.data_name = args.data_name
         self.data = f'data/{self.data_name}/cascades.txt'
         self.u2idx_dict = f'data/{self.data_name}/u2idx.pickle'
@@ -197,6 +200,10 @@ class BaseLoader(object):
             sorted_indices[valid_end:]
         )
 
+        self.train_set = train_set
+        self.valid_set = valid_set
+        self.test_set = test_set
+        
         self.user_num = user_count
         self.cas_num = total_cascades
 
