@@ -2,7 +2,76 @@ import logging
 import pickle
 import numpy as np
 import torch
+from torch.utils.data import Dataset
 from utils import Constants  # Assuming Constants.EOS and Constants.PAD are defined
+
+
+class CascadeDataset(Dataset):
+    """
+    A PyTorch-compatible Dataset for cascade sequences.
+    """
+
+    def __init__(self, cascades, timestamps, indices):
+        self.cascades = cascades
+        self.timestamps = timestamps
+        self.indices = indices
+
+    def __len__(self):
+        return len(self.cascades)
+
+    def __getitem__(self, idx):
+        # Returns a single, unpadded data point.
+        return (
+            self.cascades[idx],
+            self.timestamps[idx],
+            self.indices[idx]
+        )
+
+
+def collate_fn(batch):
+    """
+    Collates a batch of samples into padded Tensors.
+    This function replaces the padding logic from the old custom DataLoader.
+
+    Args:
+        batch (list): A list of tuples, where each tuple is a return value from
+                      CascadeDataset.__getitem__, i.e., (cascade, timestamp, index).
+
+    Returns:
+        A tuple of padded Tensors: (seq_data, seq_data_timestamp, seq_idx).
+    """
+    cascades, timestamps, indices = zip(*batch)
+
+    max_len = 500  # Fixed maximum sequence length
+
+    # --- Pad user sequences ---
+    pad_value_user = Constants.PAD
+    padded_cascades = []
+    for seq in cascades:
+        if len(seq) < max_len:
+            padded_seq = seq + [pad_value_user] * (max_len - len(seq))
+        else:
+            padded_seq = seq[:max_len]
+        padded_cascades.append(padded_seq)
+
+    seq_data = torch.LongTensor(padded_cascades)
+
+    # --- Pad timestamp sequences ---
+    pad_value_time = float(Constants.PAD)
+    padded_timestamps = []
+    for seq in timestamps:
+        if len(seq) < max_len:
+            padded_seq = seq + [pad_value_time] * (max_len - len(seq))
+        else:
+            padded_seq = seq[:max_len]
+        padded_timestamps.append(padded_seq)
+
+    seq_data_timestamp = torch.FloatTensor(padded_timestamps)
+
+    # --- Convert indices ---
+    seq_idx = torch.LongTensor(indices)
+
+    return seq_data, seq_data_timestamp, seq_idx
 
 
 class BaseLoader(object):
@@ -33,8 +102,8 @@ class BaseLoader(object):
             with_eos (bool): Whether to append an end-of-sequence (EOS) token to each cascade.
 
         Returns:
-            tuple: A tuple containing user count, cascades, timestamps, and the split datasets
-                   (train_set, valid_set, test_set).
+            tuple: A tuple containing user count, original cascades, original timestamps,
+                   and the split datasets (train_set, valid_set, test_set) as CascadeDataset objects.
         """
         if not load_dict:
             # Build user-to-index mappings if not loading from files
@@ -111,28 +180,42 @@ class BaseLoader(object):
         train_end = int(train_ratio * total_cascades)
         valid_end = int((train_ratio + valid_ratio) * total_cascades)
 
-        train_set = (cascades[:train_end], timestamps[:train_end], sorted_indices[:train_end])
-        valid_set = (
-        cascades[train_end:valid_end], timestamps[train_end:valid_end], sorted_indices[train_end:valid_end])
-        test_set = (cascades[valid_end:], timestamps[valid_end:], sorted_indices[valid_end:])
+        # Return CascadeDataset objects instead of raw tuples
+        train_set = CascadeDataset(
+            cascades[:train_end],
+            timestamps[:train_end],
+            sorted_indices[:train_end]
+        )
+        valid_set = CascadeDataset(
+            cascades[train_end:valid_end],
+            timestamps[train_end:valid_end],
+            sorted_indices[train_end:valid_end]
+        )
+        test_set = CascadeDataset(
+            cascades[valid_end:],
+            timestamps[valid_end:],
+            sorted_indices[valid_end:]
+        )
 
         self.user_num = user_count
         self.cas_num = total_cascades
 
-        # Log detailed dataset statistics
-        self.log_dataset_stats(cascades, with_eos, train_set, valid_set, test_set)
+        # Log dataset statistics using the length of the new Dataset objects
+        logging.info(
+            f"\nTraining size: {len(train_set)}\nValidation size: {len(valid_set)}\nTesting size: {len(test_set)}")
 
         self.cascades = cascades
         self.timestamps = timestamps
-        self.train_data = train_set
-        self.valid_data = valid_set
-        self.test_data = test_set
-        self.train_cas_user_dict = self.create_cascade_user_dict(train_set)
+
+        # Note: self.train_cas_user_dict needs the original tuple format for setup
+        train_cascades_tuple = (cascades[:train_end], timestamps[:train_end], sorted_indices[:train_end])
+        self.train_cas_user_dict = self.create_cascade_user_dict(train_cascades_tuple)
 
         return user_count, cascades, timestamps, train_set, valid_set, test_set
 
     def log_dataset_stats(self, cascades, with_eos, train_set, valid_set, test_set):
         """Logs detailed statistics of the processed dataset."""
+        # Note: This function expects dataset splits as tuples of lists, e.g., train_set[0]
         logging.info(
             f"\nTraining size: {len(train_set[0])}\nValidation size: {len(valid_set[0])}\nTesting size: {len(test_set[0])}")
 
@@ -154,7 +237,7 @@ class BaseLoader(object):
 
         avg_length_actual = (total_interactions_actual / num_filtered_cascades) if num_filtered_cascades > 0 else 0.0
         density = (total_interactions_actual / (
-                    num_actual_users * num_filtered_cascades)) if num_filtered_cascades > 0 and num_actual_users > 0 else 0.0
+                num_actual_users * num_filtered_cascades)) if num_filtered_cascades > 0 and num_actual_users > 0 else 0.0
 
         logging.info("--- Dataset Statistics Summary ---")
         logging.info(f"Total Unique Users (excluding special tokens): {num_actual_users}")
@@ -224,84 +307,3 @@ class BaseLoader(object):
         user_size = len(idx2u)
         logging.info(f"user_size (total unique users in data): {user_size - 2}")
         return user_size, u2idx, idx2u
-
-
-class DataLoader(object):
-    """
-    Iterator for batching and padding sequence data.
-    """
-
-    def __init__(self, cas, batch_size=64, cuda=True, test=False):
-        self._batch_size = batch_size
-        self.cas = cas[0]  # Cascade sequences
-        self.time = cas[1]  # Timestamps
-        self.idx = cas[2]  # Original indices
-        self.test = test
-        self.cuda = cuda
-
-        self._n_batch = int(np.ceil(len(self.cas) / self._batch_size)) if self.cas else 0
-        self._iter_count = 0
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._iter_count < self._n_batch:
-            batch_idx = self._iter_count
-            self._iter_count += 1
-
-            start_idx = batch_idx * self._batch_size
-            end_idx = (batch_idx + 1) * self._batch_size
-
-            seq_insts = self.cas[start_idx:end_idx]
-            seq_timestamp = self.time[start_idx:end_idx]
-            seq_indices = self.idx[start_idx:end_idx]
-
-            seq_data = self.pad_to_longest(seq_insts, is_timestamp=False)
-            seq_data_timestamp = self.pad_to_longest(seq_timestamp, is_timestamp=True)
-
-            # Note: For PyTorch 0.4+, Variable is deprecated. Tensors can be used directly.
-            # The `volatile` argument is replaced by the `torch.no_grad()` context manager.
-            seq_idx = torch.LongTensor(seq_indices)
-
-            if self.cuda:
-                seq_idx = seq_idx.cuda()
-
-            return seq_data, seq_data_timestamp, seq_idx
-        else:
-            self._iter_count = 0
-            raise StopIteration()
-
-    def __len__(self):
-        return self._n_batch
-
-    def pad_to_longest(self, insts, is_timestamp=False):
-        """
-        Pads instances in a batch to a fixed maximum length.
-        """
-        max_len = 500  # Fixed maximum sequence length
-
-        # Define padding values based on data type
-        pad_value_user = Constants.PAD
-        pad_value_time = float(Constants.PAD)  # Timestamps are floats
-
-        padded_data = []
-        for inst in insts:
-            pad_val = pad_value_time if is_timestamp else pad_value_user
-            # Pad or truncate the sequence
-            if len(inst) < max_len:
-                padded_inst = inst + [pad_val] * (max_len - len(inst))
-            else:
-                padded_inst = inst[:max_len]
-            padded_data.append(padded_inst)
-
-        # Convert to a PyTorch tensor
-        if is_timestamp:
-            inst_data_tensor = torch.FloatTensor(padded_data)
-        else:
-            inst_data_tensor = torch.LongTensor(padded_data)
-
-        if self.cuda:
-            inst_data_tensor = inst_data_tensor.cuda()
-
-        return inst_data_tensor

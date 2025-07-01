@@ -125,9 +125,10 @@ class TransformerBlock(nn.Module):
         Q_K = torch.einsum("bqd,bkd->bqk", Q, K) / (temperature + episilon)
         if mask is not None:
             pad_mask = mask.unsqueeze(dim=-1).expand(-1, -1, K.size(1))
-            mask = torch.triu(torch.ones(pad_mask.size()), diagonal=1).bool()
-            mask_ = mask + pad_mask
-            Q_K = Q_K.masked_fill(mask_, -2**32+1)
+            device = Q.device
+            causal_mask = torch.triu(torch.ones_like(pad_mask, device=device), diagonal=1).bool()
+            final_mask = pad_mask | causal_mask
+            Q_K = Q_K.masked_fill(final_mask, -2**32 + 1)
 
         Q_K_score = F.softmax(Q_K, dim=-1)  # (batch_size, max_q_words, max_k_words)
         Q_K_score = self.dropout(Q_K_score)

@@ -4,9 +4,10 @@ import os
 import sys
 import importlib
 import torch
+from torch.utils.data import DataLoader as TorchDataLoader
 
 from utils import Utils
-from helpers.BaseLoader import BaseLoader, DataLoader
+from helpers.BaseLoader import BaseLoader, collate_fn
 from helpers.BaseRunner import BaseRunner
 
 
@@ -26,6 +27,8 @@ def parse_global_args(parser):
     parser.add_argument('--gpu', type=str, default='0', help='GPU to use (e.g., "0"), set to "" for CPU.')
     parser.add_argument('--filter_num', type=int, default=1, help='Minimum length of a cascade to be included.')
     parser.add_argument('--seed', type=int, default=2023, help='Random seed for reproducibility.')
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='Number of workers for data loading. 0 for main process.')
     return parser
 
 
@@ -41,21 +44,43 @@ def main(model_class, args):
 
     # Set device (GPU or CPU)
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-    args.device = torch.device('cuda') if args.gpu and torch.cuda.is_available() else torch.device('cpu')
+    use_cuda = args.gpu and torch.cuda.is_available()
+    args.device = torch.device('cuda') if use_cuda else torch.device('cpu')
     logging.info(f'Device: {args.device}')
 
     # Load and split data
     data_loader = BaseLoader(args)
-    user_size, _, _, train, valid, test = data_loader.split_data(
+    user_size, _, _, train_dataset, valid_dataset, test_dataset = data_loader.split_data(
         args.train_rate,
         args.valid_rate,
         load_dict=True
     )
 
     # Create data loaders for each set
-    train_data = DataLoader(train, batch_size=args.batch_size, cuda=(args.device.type == 'cuda'))
-    valid_data = DataLoader(valid, batch_size=args.batch_size, cuda=(args.device.type == 'cuda'))
-    test_data = DataLoader(test, batch_size=args.batch_size, cuda=(args.device.type == 'cuda'))
+    train_data = TorchDataLoader(
+        dataset=train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=use_cuda,
+        collate_fn=collate_fn
+    )
+    valid_data = TorchDataLoader(
+        dataset=valid_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=use_cuda,
+        collate_fn=collate_fn
+    )
+    test_data = TorchDataLoader(
+        dataset=test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=use_cuda,
+        collate_fn=collate_fn
+    )
 
     # Prepare model
     model = model_class(args, data_loader)
@@ -74,7 +99,7 @@ if __name__ == '__main__':
     init_parser = argparse.ArgumentParser(description='Model Runner Initializer', add_help=False)
     init_parser.add_argument('--model_name', type=str, default="DyHGCN",
                              help='The name of the model to run (e.g., DyHGCN).')
-    init_args, _ = init_parser.parse_known_args()
+    init_args, remaining_argv = init_parser.parse_known_args()
 
     # Dynamically import the model class
     try:
@@ -89,10 +114,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Model Runner')
     parser = parse_global_args(parser)
     parser = Model.parse_model_args(parser)  # Add model-specific arguments
-    args = parser.parse_args()
+    args = parser.parse_args(remaining_argv, namespace=init_args)
 
     # Construct log and model filenames
-    log_filename_parts = [init_args.model_name, args.data_name]
+    log_filename_parts = [args.model_name, args.data_name]
 
     # Add extra model-specific parameters to the filename
     if hasattr(Model, 'extra_log_args'):
