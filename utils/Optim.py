@@ -19,6 +19,14 @@ class ScheduledOptim(object):
         self.n_warmup_steps = n_warmup_steps  # Number of warmup steps
         self.n_current_steps = 0  # Initialize the current step count
 
+    @property
+    def param_groups(self):
+        """
+        Expose the param_groups of the wrapped optimizer.
+        This is required for compatibility with external tools like GradScaler.
+        """
+        return self.optimizer.param_groups
+
     def step(self):
         """Step by the inner optimizer."""
         self.optimizer.step()  # Call the step method of the wrapped optimizer
