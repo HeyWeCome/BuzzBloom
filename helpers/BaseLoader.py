@@ -2,7 +2,8 @@ import logging
 import pickle
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+
+from torch.utils.data import Dataset, DataLoader as TorchDataLoader
 from utils import Constants  # Assuming Constants.EOS and Constants.PAD are defined
 
 
@@ -80,6 +81,9 @@ class BaseLoader(object):
     """
 
     def __init__(self, args):
+        self.test_set = None
+        self.valid_set = None
+        self.train_set = None
         # Set file paths based on the dataset name
         self.data_name = args.data_name
         self.data = f'data/{self.data_name}/cascades.txt'
@@ -197,6 +201,10 @@ class BaseLoader(object):
             sorted_indices[valid_end:]
         )
 
+        self.train_set = train_set
+        self.valid_set = valid_set
+        self.test_set = test_set
+
         self.user_num = user_count
         self.cas_num = total_cascades
 
@@ -248,6 +256,40 @@ class BaseLoader(object):
         logging.info(f"Min. Cascade Length (users, >=filter_num): {min(actual_lengths) if actual_lengths else 0}")
         logging.info(f"Density (Interactions / (Users * Cascades)): {density:.6f}")
         logging.info("----------------------------------")
+
+    def get_dataloaders(self, args):
+        """
+        Creates and returns the data loaders for training, validation, and testing.
+        This is the standard implementation using TorchDataLoader.
+        """
+        logging.info("Preparing standard TorchDataLoaders...")
+
+        # 调用 split_data 获取数据集
+        user_size, _, _, train_dataset, valid_dataset, test_dataset = self.split_data(
+            args.train_rate,
+            args.valid_rate,
+            load_dict=True
+        )
+        # 将 user_num 存起来，模型初始化时可能需要
+        self.user_num = user_size
+
+        use_cuda = args.gpu and torch.cuda.is_available()
+
+        train_data = TorchDataLoader(
+            dataset=train_dataset, batch_size=args.batch_size, shuffle=True,
+            num_workers=args.num_workers, pin_memory=use_cuda, collate_fn=collate_fn
+        )
+        valid_data = TorchDataLoader(
+            dataset=valid_dataset, batch_size=args.batch_size, shuffle=False,
+            num_workers=args.num_workers, pin_memory=use_cuda, collate_fn=collate_fn
+        )
+        test_data = TorchDataLoader(
+            dataset=test_dataset, batch_size=args.batch_size, shuffle=False,
+            num_workers=args.num_workers, pin_memory=use_cuda, collate_fn=collate_fn
+        )
+
+        # 返回准备好的 loaders
+        return train_data, valid_data, test_data
 
     def create_cascade_user_dict(self, train_set):
         """

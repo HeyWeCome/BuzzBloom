@@ -189,8 +189,10 @@ def load_dynamic_diffusion_graph(dataloader, time_step_split):
     with open(dataloader.idx2u_dict, 'rb') as handle:
         _idx2u = pickle.load(handle)  # 反序列化索引到用户的映射字典
 
-    # 从训练数据中提取级联信息及其对应的时间戳
-    cascades, timestamps, _ = dataloader.train_data
+    # 从 dataloader 的 train_set (CascadeDataset 对象) 中获取级联和时间戳
+    train_dataset = dataloader.train_set
+    cascades = train_dataset.cascades
+    timestamps = train_dataset.timestamps
 
     # 初始化一个列表，用于存储用户交互对及其时间戳
     t_cascades = []
