@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-# Updated AMP imports
-from torch.amp import autocast, GradScaler
+# Removed AMP imports:
+# from torch.amp import autocast, GradScaler
 
 from utils import Constants
 from utils.Metrics import Metrics
@@ -15,13 +15,13 @@ from utils.Optim import ScheduledOptim
 class BaseRunner(object):
     """
     Handles the training, validation, and testing pipeline for a model.
+    This version uses standard full-precision (float32) training.
     """
 
     def __init__(self, args):
         # Stop training if the validation score doesn't improve for `patience` epochs.
         self.patience = args.patience
-        # Enable Automatic Mixed Precision (AMP) if available and specified in args.
-        self.use_amp = getattr(args, 'use_amp', True)
+        # The 'use_amp' flag has been removed as this runner no longer uses mixed precision.
 
     def run(self, model, train_data, valid_data, test_data, data_loader, args):
         """
@@ -37,21 +37,20 @@ class BaseRunner(object):
         model.to(args.device)
         loss_func.to(args.device)
 
-        # Initialize the gradient scaler for AMP.
-        # It is only enabled when running on a CUDA device and use_amp is True.
-        scaler = GradScaler(enabled=(args.device.type == 'cuda' and self.use_amp))
-
         validation_history = 0.0
         best_scores = {}
         epochs_without_improvement = 0
 
         for epoch_i in range(args.epoch):
+            if hasattr(model, 'before_epoch'):
+                model.before_epoch()
+
             logging.info(f'\n[ Epoch {epoch_i} ]')
             start = time.time()
 
             # Train the model for one epoch
             train_loss, train_accu = self.train_epoch(
-                model, train_data, loss_func, optimizer, scaler, args.device
+                model, train_data, loss_func, optimizer, args.device
             )
             logging.info(
                 f'  - (Training)   Loss: {train_loss:8.5f}, '
@@ -91,17 +90,15 @@ class BaseRunner(object):
         logging.info("\n- (Finished!) \nBest validation scores:")
         self.log_scores(best_scores)
 
-    def train_epoch(self, model, training_data, loss_func, optimizer, scaler, device):
+    def train_epoch(self, model, training_data, loss_func, optimizer, device):
         """
-        Performs one epoch of training with optional Automatic Mixed Precision.
+        Performs one epoch of training using standard full-precision.
         """
         model.train()
 
         total_loss = 0.0
         n_total_users = 0.0
         n_total_correct = 0.0
-
-        is_amp_enabled = device.type == 'cuda' and self.use_amp
 
         for batch in tqdm(training_data, desc="  Training", ncols=100, leave=False):
             history_seq, history_seq_timestamp, history_seq_idx = (item.to(device) for item in batch)
@@ -114,20 +111,15 @@ class BaseRunner(object):
 
             optimizer.zero_grad()
 
-            # Use autocast for the forward pass, which automatically uses mixed precision.
-            with autocast(device_type=device.type, dtype=torch.float16, enabled=is_amp_enabled):
-                loss, n_correct = model.get_performance(
-                    history_seq, history_seq_timestamp, history_seq_idx, loss_func, gold
-                )
+            # The 'autocast' context manager has been removed for a standard forward pass.
+            loss, n_correct = model.get_performance(
+                history_seq, history_seq_timestamp, history_seq_idx, loss_func, gold
+            )
 
-            # Scale the loss to prevent underflow, then perform backward pass.
-            scaler.scale(loss).backward()
-
-            # Unscales gradients and calls optimizer.step(). Skips step if grads are inf/nan.
-            scaler.step(optimizer)
-
-            # Update the scale for the next iteration.
-            scaler.update()
+            # Standard backward pass and optimizer step.
+            # The GradScaler logic has been replaced with these two lines.
+            loss.backward()
+            optimizer.step()
 
             optimizer.update_learning_rate()
 
@@ -147,19 +139,17 @@ class BaseRunner(object):
 
         n_total_words = 0
         metric_calculator = Metrics()
-        is_amp_enabled = device.type == 'cuda' and self.use_amp
 
         with torch.no_grad():
             for batch in tqdm(validation_data, desc="  Evaluating", ncols=100, leave=False):
                 history_seq, history_seq_timestamp, history_seq_idx = (item.to(device) for item in batch)
                 gold = history_seq[:, 1:].contiguous().view(-1).cpu().numpy()
 
-                # Use autocast for performance and consistency during evaluation. No GradScaler needed.
-                with autocast(device_type=device.type, dtype=torch.float16, enabled=is_amp_enabled):
-                    pred = model(history_seq, history_seq_timestamp, history_seq_idx)
+                # 'autocast' context manager removed. Evaluation runs in full precision.
+                pred = model(history_seq, history_seq_timestamp, history_seq_idx)
 
-                # Cast to float32 before moving to CPU to avoid potential issues.
-                y_pred = pred.detach().to(torch.float32).cpu().numpy()
+                # Model predictions are already in float32, so no need for an explicit cast.
+                y_pred = pred.detach().cpu().numpy()
 
                 scores_batch, scores_len = metric_calculator.compute_metric(y_pred, gold, k_list)
                 if scores_len == 0:
