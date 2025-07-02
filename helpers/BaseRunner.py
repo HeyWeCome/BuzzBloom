@@ -37,18 +37,18 @@ class BaseRunner(object):
         model.to(args.device)
         loss_func.to(args.device)
 
-        # GradScaler has been removed. It is only needed for mixed-precision training.
-
         validation_history = 0.0
         best_scores = {}
         epochs_without_improvement = 0
 
         for epoch_i in range(args.epoch):
+            if hasattr(model, 'before_epoch'):
+                model.before_epoch()
+
             logging.info(f'\n[ Epoch {epoch_i} ]')
             start = time.time()
 
             # Train the model for one epoch
-            # The 'scaler' argument has been removed from the train_epoch call.
             train_loss, train_accu = self.train_epoch(
                 model, train_data, loss_func, optimizer, args.device
             )
