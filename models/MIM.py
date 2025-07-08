@@ -370,7 +370,7 @@ class TransformerBlock(nn.Module):
             output = self.FFN(X) + X
         return output, kl_att
 
-class MIMDP(nn.Module):
+class MIM(nn.Module):
 
     @staticmethod
     def parse_model_args(parser):
@@ -398,7 +398,7 @@ class MIMDP(nn.Module):
         return parser
 
     def __init__(self, args, data_loader):
-        super(MIMDP, self).__init__()
+        super(MIM, self).__init__()
         self.args = args
         self.beta = args.beta
         self.beta2 = args.beta2
