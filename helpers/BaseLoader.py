@@ -43,7 +43,7 @@ def collate_fn(batch):
     """
     cascades, timestamps, indices = zip(*batch)
 
-    max_len = 500  # Fixed maximum sequence length
+    max_len = 200  # Fixed maximum sequence length
 
     # --- Pad user sequences ---
     pad_value_user = Constants.PAD
@@ -214,6 +214,8 @@ class BaseLoader(object):
 
         self.cascades = cascades
         self.timestamps = timestamps
+
+        self.all_cascades = cascades[:valid_end]  # Designed for MIMDP's Hierarchical Knowledge Distillation
 
         # Note: self.train_cas_user_dict needs the original tuple format for setup
         train_cascades_tuple = (cascades[:train_end], timestamps[:train_end], sorted_indices[:train_end])
