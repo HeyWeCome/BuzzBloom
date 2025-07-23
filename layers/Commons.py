@@ -21,7 +21,11 @@ class Fusion(nn.Module):
         init.xavier_normal_(self.linear2.weight)
 
     def forward(self, hidden, dy_emb):
-        # hidden and dy_emb are expected to be on the same correct device
+        # defensive programming: ensure tensors are on the same device as the model
+        device = self.linear1.weight.device
+        hidden = hidden.to(device)
+        dy_emb = dy_emb.to(device)
+
         emb = torch.cat([hidden.unsqueeze(dim=0), dy_emb.unsqueeze(dim=0)], dim=0)
         emb_score = F.softmax(self.linear2(torch.tanh(self.linear1(emb))), dim=0)
         emb_score = self.dropout(emb_score)
@@ -31,14 +35,6 @@ class Fusion(nn.Module):
 
 class GraphNN(nn.Module):
     def __init__(self, num_nodes, input_dim, dropout=0.5, is_norm=True):
-        """
-        初始化GraphNN模型。
-
-        :param num_nodes: 节点或实体的总数
-        :param input_dim: 节点特征的维度
-        :param dropout: 丢弃率，用于正则化
-        :param is_norm: 是否应用批归一化
-        """
         super(GraphNN, self).__init__()
         self.embedding = nn.Embedding(num_nodes, input_dim, padding_idx=0)
         self.gnn1 = GCNConv(input_dim, input_dim * 2)
@@ -51,18 +47,15 @@ class GraphNN(nn.Module):
         self.init_weights()
 
     def init_weights(self):
-        """使用Xavier正态分布初始化嵌入层的权重。"""
         init.xavier_normal_(self.embedding.weight)
 
     def forward(self, graph):
-        """
-        前向传播。
-        `graph` is a PyG Data object. It is expected to be on the same device as the model.
-        """
+        # MODIFIED: Move graph data to the correct device
+        device = self.embedding.weight.device
+        graph = graph.to(device)
+
         graph_edge_index = graph.edge_index
 
-        # self.embedding.weight acts as initial node features for all nodes.
-        # Both self.embedding.weight and graph_edge_index must be on the same device.
         graph_x_embeddings = self.gnn1(self.embedding.weight, graph_edge_index)
         graph_x_embeddings = self.dropout(graph_x_embeddings)
         graph_output = self.gnn2(graph_x_embeddings, graph_edge_index)
@@ -86,20 +79,9 @@ class HierarchicalGNNWithAttention(nn.Module):
         self.fusion_layer = Fusion(output_dim)
 
     def forward(self, friendship_embedding, hypergraph_structure):
-        """
-        前向传播。
-
-        :param friendship_embedding: 节点的初始嵌入 (on model's device)
-        :param hypergraph_structure: 包含超图信息的列表 (tensors inside are on CPU)
-        :return: 包含所有嵌入的字典 (on model's device)
-        """
-        # 1. Get the correct device from the model's parameters/buffers.
         device = friendship_embedding.device
 
-        # 2. Move all tensor components of hypergraph_structure to the correct device.
-        # Move the dictionary of subgraph tensors
         hypergraph = {k: v.to(device) for k, v in hypergraph_structure[0].items()}
-        # Move the root indices tensor
         root_indices = hypergraph_structure[1].to(device)
 
         root_embedding = F.embedding(root_indices, friendship_embedding)
@@ -107,12 +89,9 @@ class HierarchicalGNNWithAttention(nn.Module):
         embedding_results = {}
         current_node_embedding = friendship_embedding
 
-        # Iterate through the subgraphs on the correct device
-        for subgraph_key in sorted(hypergraph.keys()):  # Use sorted for deterministic order
+        for subgraph_key in sorted(hypergraph.keys()):
             subgraph = hypergraph[subgraph_key]
-
             sub_node_embedding, sub_edge_embedding = self.gat1(current_node_embedding, subgraph, root_embedding)
-
             sub_node_embedding = F.dropout(sub_node_embedding, self.dropout, training=self.training)
 
             if self.use_norm:
@@ -120,8 +99,6 @@ class HierarchicalGNNWithAttention(nn.Module):
                 sub_edge_embedding = self.batch_norm1(sub_edge_embedding)
 
             current_node_embedding = self.fusion_layer(current_node_embedding, sub_node_embedding)
-
-            # Store results, keeping them on the model's device for subsequent computations.
             embedding_results[subgraph_key] = [current_node_embedding, sub_edge_embedding]
 
         return embedding_results
@@ -161,6 +138,13 @@ class HGATLayer(nn.Module):
             self.bias.data.uniform_(-stdv, stdv)
 
     def forward(self, node_features, adjacency_matrix, root_embeddings):
+        # NEW: Add defensive device transfers
+        device = self.weight2.device
+        node_features = node_features.to(device)
+        adjacency_matrix = adjacency_matrix.to(device)
+        # root_embeddings is likely already on the correct device, but we can be safe
+        root_embeddings = root_embeddings.to(device)
+
         if self.transfer:
             node_features_transformed = node_features.matmul(self.weight)
         else:
@@ -208,29 +192,14 @@ class DynamicGraphNN(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, diffusion_graphs):
-        """
-        前向传播。
-
-        :param diffusion_graphs: 包含多个扩散图的字典 (graphs are on CPU)
-        :return: 各扩散图的嵌入表示 (dictionary with embeddings on model's device)
-        """
         results = dict()
-
-        # 1. Get the correct device from a model parameter.
         device = self.embedding.weight.device
 
-        # Iterate through the diffusion graphs
         for key in sorted(diffusion_graphs.keys()):
             graph = diffusion_graphs[key]
-
-            # 2. Move the graph to the same device as the model before computation.
             graph = graph.to(device)
-
-            # Now both gnn1 and graph are on the same device.
             graph_x_embeddings = self.gnn1(graph)
             graph_x_embeddings = self.dropout(graph_x_embeddings)
-
-            # Store the results, which are already on the correct device.
             results[key] = graph_x_embeddings
 
         return results
@@ -244,28 +213,32 @@ class TimeAttention(nn.Module):
         self.dropout = nn.Dropout(0.1)
 
     def forward(self, T_idx, Dy_U_embed, mask=None, episilon=1e-6):
-        '''
-            T_idx: (bsz, user_len)
-            Dy_U_embed: (bsz, user_len, time_len, d)
-            output: (bsz, user_len, d)
-        '''
+        # MODIFIED: Get device and move input tensors
+        device = self.time_embedding.weight.device
+        T_idx = T_idx.to(device)
+        Dy_U_embed = Dy_U_embed.to(device)
+
         temperature = Dy_U_embed.size(-1) ** 0.5 + episilon
-        T_embed = self.time_embedding(T_idx)
+        T_embed = self.time_embedding(T_idx)  # NOW THIS WILL WORK
 
         affine = torch.einsum("bud,butd->but", T_embed, Dy_U_embed)
         score = affine / temperature
 
-        # The mask logic seems to be disabled. If enabled, ensure mask is on the correct device.
-        # if mask is None:
-        #     mask = torch.triu(torch.ones(score.size(), device=score.device), diagonal=1).bool()
-        #     score = score.masked_fill(mask, -torch.finfo(score.dtype).max)
+        # If the mask is ever used, it should also be moved to the device.
+        if mask is not None:
+            mask = mask.to(device)
+            score = score.masked_fill(mask, -torch.finfo(score.dtype).max)
 
-        alpha = F.softmax(score, dim=-1)  # Softmax over the 'time_len' dimension
+        alpha = F.softmax(score, dim=-1)
         alpha = alpha.unsqueeze(dim=-1)
 
         att = (alpha * Dy_U_embed).sum(dim=2)
         return att
 
+
+# The following modules (Chomp1d, ConvBlock) do not have parameters
+# that would cause this specific device mismatch issue, so they are left as is.
+# They operate on whatever device their input `x` is on.
 
 class Chomp1d(nn.Module):
     def __init__(self, chomp_size):
