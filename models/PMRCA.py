@@ -103,6 +103,7 @@ class PMRCA(nn.Module):
 
         # Model components
         self.align_attention = TransformerBlock(input_size=self.embedding_size, n_heads=self.n_heads)
+        self.seq_encoder = TransformerBlock(input_size=self.embedding_size, n_heads=self.n_heads)
         self.linear = nn.Linear(self.embedding_size, self.user_num)
         self.drop_timestamp = nn.Dropout(args.dropout)  # Not used in forward pass but kept for compatibility
 
@@ -399,26 +400,12 @@ class PMRCA(nn.Module):
         dyemb = user_all_embeddings[input_seq_for_pred]
         dyemb += position_embed
 
-        # 3. Multi-Intention Modeling
+        # 3. Intention Modeling
         original_seq_emb = self.user_embedding(input_seq_for_pred)
-        valid_his = (input_seq_for_pred > 0).long()
+        seq_out = self.seq_encoder(original_seq_emb, original_seq_emb, original_seq_emb)
 
-        # Calculate attention scores to derive K intention vectors
-        attn_score = self.W2(torch.tanh(self.W1(original_seq_emb)))
-        attn_score = attn_score.masked_fill(valid_his.unsqueeze(-1) == 0, -1e9)  # Use large negative for stability
-        attn_score = attn_score.transpose(-1, -2)
-        attn_score = F.softmax(attn_score, dim=-1)
-        attn_score = attn_score.masked_fill(torch.isnan(attn_score), 0)
-
-        # Weighted sum to get intention vectors
-        intention_vectors = (original_seq_emb.unsqueeze(1) * attn_score.unsqueeze(-1)).sum(dim=2)
-
-        # Broadcast intention vectors to match sequence length for the alignment step
-        intention_vectors_expanded = intention_vectors.unsqueeze(2).expand(-1, -1, original_seq_emb.size(1), -1).sum(1)
-
-        # 4. Alignment and Prediction
-        # Align dynamic sequence embeddings with user intentions
-        att_out = self.align_attention(dyemb, intention_vectors_expanded, intention_vectors_expanded, mask=mask)
+        # 4. Alignment Dyemb and Intention for Prediction
+        att_out = self.align_attention(dyemb, seq_out, seq_out)
 
         # Final linear layer for prediction
         output = self.linear(att_out)
