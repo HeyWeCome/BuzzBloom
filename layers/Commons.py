@@ -228,6 +228,11 @@ class TimeAttention(nn.Module):
         if mask is not None:
             mask = mask.to(device)
             score = score.masked_fill(mask, -torch.finfo(score.dtype).max)
+            # 防止某些行被完全屏蔽导致 softmax 产生 NaN：当整行被屏蔽时，将该行的分数设为零向量
+            all_masked = mask.all(dim=-1)  # [batch, seq_len]
+            if all_masked.any():
+                # 将完全屏蔽的行重置为零，softmax 将给出均匀分布；随后与 Dy_U_embed 相乘再求和为零
+                score[all_masked] = 0.0
 
         alpha = F.softmax(score, dim=-1)
         alpha = alpha.unsqueeze(dim=-1)
