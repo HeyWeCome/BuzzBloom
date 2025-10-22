@@ -58,7 +58,7 @@ def collate_fn(batch):
     seq_data = torch.LongTensor(padded_cascades)
 
     # --- Pad timestamp sequences ---
-    pad_value_time = float(Constants.PAD)
+    pad_value_time = float(Constants.PAD_TIME)
     padded_timestamps = []
     for seq in timestamps:
         if len(seq) < max_len:
