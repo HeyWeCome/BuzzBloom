@@ -43,7 +43,8 @@ def collate_fn(batch):
     """
     cascades, timestamps, indices = zip(*batch)
 
-    max_len = 200  # Fixed maximum sequence length
+    # Dynamic max length per batch to reduce unnecessary padding; cap at 200
+    max_len = min(max(len(seq) for seq in cascades), 200)
 
     # --- Pad user sequences ---
     pad_value_user = Constants.PAD
@@ -281,12 +282,14 @@ class BaseLoader(object):
             dataset=train_dataset, batch_size=args.batch_size, shuffle=True,
             num_workers=args.num_workers, pin_memory=use_cuda, collate_fn=collate_fn
         )
+        # Use eval_batch_size if provided; otherwise, fall back to training batch_size
+        eval_bsz = args.batch_size if (getattr(args, 'eval_batch_size', None) in [None, 0]) else args.eval_batch_size
         valid_data = TorchDataLoader(
-            dataset=valid_dataset, batch_size=args.batch_size, shuffle=False,
+            dataset=valid_dataset, batch_size=eval_bsz, shuffle=False,
             num_workers=args.num_workers, pin_memory=use_cuda, collate_fn=collate_fn
         )
         test_data = TorchDataLoader(
-            dataset=test_dataset, batch_size=args.batch_size, shuffle=False,
+            dataset=test_dataset, batch_size=eval_bsz, shuffle=False,
             num_workers=args.num_workers, pin_memory=use_cuda, collate_fn=collate_fn
         )
 

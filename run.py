@@ -19,7 +19,8 @@ def parse_global_args(parser):
     """
     parser.add_argument('--data_name', type=str, default='memetracker', help='Name of the dataset.')
     parser.add_argument('--epoch', type=int, default=100, help='Number of training epochs.')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training and evaluation.')
+    parser.add_argument('--batch_size', type=int, default=2048, help='Batch size for training and evaluation.')
+    parser.add_argument('--eval_batch_size', type=int, default=2048, help='Batch size for validation/test; defaults to training batch size.')
     parser.add_argument('--d_model', type=int, default=64, help='Dimension of the model (embeddings, hidden layers).')
     parser.add_argument('--patience', type=int, default=10, help='Patience for early stopping.')
     parser.add_argument('--train_rate', type=float, default=0.8, help='Proportion of data for training.')

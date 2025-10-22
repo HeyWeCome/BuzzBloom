@@ -130,35 +130,49 @@ class BaseRunner(object):
 
     def test_epoch(self, model, validation_data, k_list=[10, 20, 50, 100], device=None):
         """
-        Performs one epoch of evaluation.
+        Performs one epoch of evaluation using GPU-vectorized metrics to avoid CPU stalls.
         """
         model.eval()
 
-        scores = {f'hits@{k}': 0 for k in k_list}
-        scores.update({f'map@{k}': 0 for k in k_list})
+        scores = {f'hits@{k}': 0.0 for k in k_list}
+        scores.update({f'map@{k}': 0.0 for k in k_list})
 
         n_total_words = 0
-        metric_calculator = Metrics()
 
         with torch.no_grad():
             for batch in tqdm(validation_data, desc="  Evaluating", ncols=100, leave=False):
                 history_seq, history_seq_timestamp, history_seq_idx = (item.to(device) for item in batch)
-                gold = history_seq[:, 1:].contiguous().view(-1).cpu().numpy()
+                gold_flat = history_seq[:, 1:].contiguous().view(-1)
+                valid_mask = gold_flat.ne(Constants.PAD)
 
-                # 'autocast' context manager removed. Evaluation runs in full precision.
-                pred = model(history_seq, history_seq_timestamp, history_seq_idx)
+                # Forward on GPU
+                pred = model(history_seq, history_seq_timestamp, history_seq_idx)  # [N, |U|]
 
-                # Model predictions are already in float32, so no need for an explicit cast.
-                y_pred = pred.detach().cpu().numpy()
-
-                scores_batch, scores_len = metric_calculator.compute_metric(y_pred, gold, k_list)
-                if scores_len == 0:
+                n_valid = int(valid_mask.sum().item())
+                if n_valid == 0:
                     continue
 
-                n_total_words += scores_len
                 for k in k_list:
-                    scores[f'hits@{k}'] += scores_batch[f'hits@{k}'] * scores_len
-                    scores[f'map@{k}'] += scores_batch[f'map@{k}'] * scores_len
+                    topk_idx = torch.topk(pred, k=k, dim=1, largest=True, sorted=True).indices  # [N, k]
+
+                    # hits@k
+                    hits_any = topk_idx.eq(gold_flat.unsqueeze(1))
+                    hits_any = hits_any & valid_mask.unsqueeze(1)
+                    hits_sum = hits_any.any(dim=1).float().sum().item()
+                    scores[f'hits@{k}'] += hits_sum
+
+                    # map@k (single-label AP@k simplifies to reciprocal rank if present)
+                    found_any = hits_any.any(dim=1)
+                    first_pos = hits_any.float().argmax(dim=1)
+                    reciprocal = torch.where(
+                        found_any,
+                        1.0 / (first_pos.float() + 1.0),
+                        torch.zeros_like(first_pos, dtype=torch.float)
+                    )
+                    reciprocal = reciprocal.masked_select(valid_mask)
+                    scores[f'map@{k}'] += reciprocal.sum().item()
+
+                n_total_words += n_valid
 
         # Normalize scores by the total number of evaluation instances
         for k in k_list:
