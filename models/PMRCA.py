@@ -34,9 +34,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
 class PMRCA(nn.Module):
-    # This class implements the model from the paper:
+    # Implementation of the model described in:
     # He W, Xiao Y, Huang M, et al. A Pattern-Driven Information Diffusion Prediction Model Based on Multisource
-    # Resonance and Cognitive Adaptation[C]//Proceedings of the 48th International ACM SIGIR Conference on Research
+    # Resonance and Cognitive Adaptation. Proceedings of the 48th International ACM SIGIR Conference on Research
     # and Development in Information Retrieval. 2025, doi: 10.1145/3726302.3729883
     """
     PMRCA (Pattern-driven Multisource Resonance and Cognitive Adaptation) model for information diffusion prediction.
@@ -44,6 +44,11 @@ class PMRCA(nn.Module):
     This model integrates graph neural networks with a transformer-based sequence model.
     It leverages multi-source resonance through a self-supervised contrastive loss between GCN layers
     and cognitive adaptation through a prototype-based contrastive loss to enhance user and cascade representations.
+    
+    The core of the PMRCA method is to optimize embedding quality through contrastive learning mechanisms.
+    This approach is encoder-agnostic, allowing users to freely choose their preferred encoder.
+    It is important to note that the performance of the selected encoder will directly impact the final
+    performance of the model.
     """
 
     @staticmethod
@@ -98,14 +103,12 @@ class PMRCA(nn.Module):
         # Embedding layers
         self.user_embedding = nn.Embedding(self.user_num, self.embedding_size)
         self.cas_embedding = nn.Embedding(self.cas_num, self.embedding_size)
-        self.user_bias = nn.Embedding(self.user_num, 1)  # Not used in the forward pass but kept for compatibility
         self.pos_embedding = nn.Embedding(data_loader.cas_num, self.pos_dim)
 
         # Model components
         self.align_attention = TransformerBlock(input_size=self.embedding_size, n_heads=self.n_heads)
         self.seq_encoder = TransformerBlock(input_size=self.embedding_size, n_heads=self.n_heads)
         self.linear = nn.Linear(self.embedding_size, self.user_num)
-        self.drop_timestamp = nn.Dropout(args.dropout)  # Not used in forward pass but kept for compatibility
 
         # Graph construction
         train_cas_user_dict = data_loader.train_cas_user_dict
@@ -127,13 +130,6 @@ class PMRCA(nn.Module):
         self.user_2cluster = None
         self.cas_centroids = None
         self.cas_2cluster = None
-
-        # Multi-intention modeling components
-        self.attn_size = 8  # Fixed dimension for the intention attention mechanism.
-        self.K = args.K
-        self.W1 = nn.Linear(self.embedding_size, self.attn_size)
-        self.W2 = nn.Linear(self.attn_size, self.K)
-        self.linear2 = nn.Linear(self.embedding_size, self.embedding_size)  # Not used, but kept for compatibility
 
         self.init_weights()
 
@@ -392,7 +388,13 @@ class PMRCA(nn.Module):
 
         # 2. Sequence Modeling with Attention
         input_seq_for_pred = input_seq[:, :-1]
+        
+        # Create padding mask - mask padding positions
+        # TransformerBlock expects a 2D mask [batch_size, seq_len]
         mask = (input_seq_for_pred == Constants.PAD)
+        
+        # Note: TransformerBlock internally handles causal masking
+        # Causal masking is implemented in TransformerBlock.scaled_dot_product_attention
 
         # Add positional encodings to the dynamic embeddings
         batch_t = torch.arange(input_seq_for_pred.size(1)).expand_as(input_seq_for_pred).to(self.device)
@@ -402,10 +404,12 @@ class PMRCA(nn.Module):
 
         # 3. Intention Modeling
         original_seq_emb = self.user_embedding(input_seq_for_pred)
-        seq_out = self.seq_encoder(original_seq_emb, original_seq_emb, original_seq_emb)
+        # Pass mask to sequence encoder
+        seq_out = self.seq_encoder(original_seq_emb, original_seq_emb, original_seq_emb, mask=mask)
 
-        # 4. Alignment Dyemb and Intention for Prediction
-        att_out = self.align_attention(dyemb, seq_out, seq_out)
+        # 4. Alignment between dynamic embeddings and intention for prediction
+        # Also pass mask to alignment attention mechanism for consistency
+        att_out = self.align_attention(dyemb, seq_out, seq_out, mask=mask)
 
         # Final linear layer for prediction
         output = self.linear(att_out)
