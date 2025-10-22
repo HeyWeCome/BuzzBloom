@@ -17,7 +17,15 @@ from helpers.BaseRunner import BaseRunner
 
 class DyHGCN(nn.Module):
     """
-    Only implement DyHGCN-S, because its performance is better.
+    DyHGCN-S model.
+
+    Core modifications and fixes:
+    - Fixed temporal data leakage: replaced block-level time indexing with per-position causal indexing and future-time masking in time attention.
+    - Added explicit time padding `Constants.PAD_TIME` and updated data loading to use it for timestamps.
+    - Ensured device consistency and removed deprecated `.cuda()` usage patterns.
+    - Improved numerical stability for time attention when all time keys are masked.
+
+    The original implementation leaked future diffusion embeddings; this version enforces strict temporal causality.
     """
     Loader = BaseLoader
     Runner = BaseRunner
@@ -74,159 +82,89 @@ class DyHGCN(nn.Module):
 
     def forward(self, input_seq, input_timestamp, tgt_idx):
         # input_seq, input_timestamp, tgt_idx are expected to be on self.device from the DataLoader/Runner
-        # 截断输入序列的最后一个元素，保留前面的部分，用于后续的预测操作
+        # Truncate the last element; keep prior steps for next-step prediction
         input_seq = input_seq[:, :-1]  # [bth, seq_len]
         input_timestamp = input_timestamp[:, :-1]  # [bth, seq_len]
 
-        # 创建掩码，用于标记填充位置（Constants.PAD）为True，其他位置为False
+        # Create mask: padding positions (Constants.PAD) are True; others False
         mask = (input_seq == Constants.PAD)  # [bth, seq_len]
 
-        # 生成批次中的时间步索引，并通过位置嵌入层获取位置嵌入
         # batch_t = torch.arange(input_seq.size(1)).expand(input_seq.size()).cuda()  # [bth, seq_len]
         batch_t = torch.arange(input_seq.size(1), device=self.device).expand(
             input_seq.size())  # MODIFIED: Create on self.device
-        # 对位置嵌入应用dropout，以防止过拟合
+        # Apply dropout to positional embeddings to reduce overfitting
         order_embed = self.dropout(self.pos_embedding(batch_t))  # [bth, seq_len, pos_dim]
 
-        # 获取批次大小和输入序列的最大长度
+        # Get batch size and max sequence length
         batch_size, max_len = input_seq.size()
 
-        # 初始化dyemb张量，用于存储动态节点嵌入，尺寸为 (batch_size, max_len, self.user_num)
+        # Initialize dyemb tensor to store dynamic node embeddings (batch_size, max_len, user_num)
         # dyemb = torch.zeros(batch_size, max_len, self.user_num).cuda()
         # dyemb is reassigned later by self.time_attention, so this initialization might not be strictly needed
         # If it were used directly before reassignment, it should be on device.
         # For now, commenting out as it seems unused before being overwritten.
         # dyemb_init_placeholder = torch.zeros(batch_size, max_len, self.user_num, device=self.device) # MODIFIED: Create on self.device
 
-        # 定义时间步长，用于动态嵌入的更新
+        # Define time step length for dynamic embedding updates
         step_len = 5
 
-        # 计算每个时间步的动态节点嵌入图
-        # dynamic_node_emb_dict's values (embeddings) are expected to be on self.device
-        # as gnn_diffusion_layer is an nn.Module and its parameters should be on self.device.
-        dynamic_node_emb_dict = self.gnn_diffusion_layer(self.diffusion_graph)  # 8个时间段
+        # Compute each time step's dynamic node embedding graph
+        dynamic_node_emb_dict = self.gnn_diffusion_layer(self.diffusion_graph)  # 8 time windows
 
-        # 初始化dyemb_timestamp张量，用于存储每个时间步对应的动态嵌入索引
-        dyemb_timestamp = torch.zeros(batch_size, max_len, dtype=torch.long,
-                                      device=self.device)  # [bth, seq_len] # MODIFIED: Create on self.device, ensure long dtype
+        # Initialize dyemb_timestamp to store per-position index into dynamic embeddings
+        dyemb_timestamp = torch.zeros(batch_size, max_len, dtype=torch.long, device=self.device)
 
-        # 获取动态嵌入字典中所有的时间戳，并创建一个映射字典
+        # Get dynamic embedding dict's all time stamps, and create a mapping dict
         dynamic_node_emb_dict_time = sorted(dynamic_node_emb_dict.keys())
-        dynamic_node_emb_dict_time_dict = dict()
-        for i, val in enumerate(dynamic_node_emb_dict_time):
-            dynamic_node_emb_dict_time_dict[val] = i
+        dynamic_node_emb_dict_time_tensor = torch.tensor(dynamic_node_emb_dict_time, device=self.device, dtype=torch.float)
 
-        # 获取字典中最新的时间戳
-        latest_timestamp_val = dynamic_node_emb_dict_time[
-            -1] if dynamic_node_emb_dict_time else 0  # ADDED: Handle empty list
+        # Compute causal time index per position to avoid future leakage from block-level indexing
+        for pos in range(max_len):
+            ts = input_timestamp[:, pos]  # [batch]
+            # Mark valid timestamps (exclude PAD_TIME)
+            valid_mask = ts > float(Constants.PAD_TIME)
+            # Compare all time keys with current position timestamp, select not more than ts last key
+            cmp = (dynamic_node_emb_dict_time_tensor.unsqueeze(0) <= ts.unsqueeze(1))  # [batch, time_step]
+            idx = cmp.sum(dim=1) - 1  # Rightmost index <= ts
+            idx = idx.clamp(min=0)    # Fall back to 0 when none are valid (ts too early or invalid)
+            # Use 0 index for invalid time (does not peek future)
+            idx = torch.where(valid_mask, idx, torch.zeros_like(idx))
+            dyemb_timestamp[:, pos] = idx
 
-        # 遍历输入序列的时间步，并为每个时间片段选择合适的动态嵌入
-        """举例
-        dynamic_node_emb_dict_time_dict = {5: emb_5, 10: emb_10, 15: emb_15}
-            字典中最新的时间戳 latest_timestamp_val=15
-        input_timestamp = torch.tensor([
-            [3, 6, 8, 9, 14, 16],   # 序列 1 的时间步
-            [1, 4, 7, 12, 13, 17]   # 序列 2 的时间步
-        ])
-        每次处理2个时间步：
-            第一次：torch.tensor([[3, 6], [1, 4]])
-                当前时间片段的最大时间戳 la_timestamp = 6
-                在字典中查找<=6的最大时间戳，即val=5，i=0，res_index=i=0
-            第二次：torch.tensor([[8, 9], [7, 12]])
-                la_timestamp = 12
-                在字典中查找<=12的最大时间戳，即val=10，i=1，res_index=i=1
-            第三次：torch.tensor([[14, 16], [13, 17]])
-                la_timestamp = 17
-                在字典中查找<=17的最大时间戳，即val=15，i=2，res_index=i=2
-        得到dyemb_timestamp = torch.tensor([
-                [0, 0, 1, 1, 2, 2],
-                [0, 0, 1, 1, 2, 2]
-            ])
-        """
-        current_latest_processed_ts = latest_timestamp_val  # Use the initial latest from dict
-        for t in range(0, max_len, step_len):
-            try:
-                # 获取当前时间片段的最大时间戳
-                current_chunk_timestamp = input_timestamp[:, t:t + step_len]
-                # Ensure there are non-PAD values before taking max if PAD is not a valid timestamp
-                valid_timestamps_in_chunk = current_chunk_timestamp[
-                    current_chunk_timestamp != Constants.PAD_TIME if hasattr(Constants,
-                                                                             'PAD_TIME') else current_chunk_timestamp >= 0]  # Assuming PAD_TIME or negative for PADs
-                if valid_timestamps_in_chunk.numel() > 0:
-                    la_timestamp = torch.max(valid_timestamps_in_chunk).item()
-                    # 如果最大时间戳小于1 (or some other threshold if 0 is valid timestamp), 说明没有有效的时间戳数据
-                    if la_timestamp < 1 and t == 0:  # Check for meaningful timestamps, especially for the first chunk
-                        # This break condition might be too strict if 0 is a valid start time.
-                        # Consider if this logic needs adjustment based on data specifics.
-                        # break
-                        pass  # Continue to assign based on available dict keys
-                    current_latest_processed_ts = la_timestamp  # 将当前时间片段的最大时间戳赋给最新时间戳
-                # else:
-                # If chunk is all PADs or invalid, what should be the index?
-                # Default to the last known good index or first/last dict index.
-                # Current logic will use previous current_latest_processed_ts
-                # pass
-            except Exception as e:
-                # logging.warning(f"Error processing timestamp chunk at t={t}: {e}")
-                pass  # Keep previous current_latest_processed_ts
-
-            # 根据时间戳确定在动态嵌入字典中的索引位置
-            res_index = len(dynamic_node_emb_dict_time_dict) - 1 if dynamic_node_emb_dict_time_dict else 0
-            # 找到小于或等于最新时间戳的最大索引值
-            # Ensure dynamic_node_emb_dict_time_dict is not empty
-            if dynamic_node_emb_dict_time_dict:
-                for i, val_key in enumerate(dynamic_node_emb_dict_time_dict.keys()):
-                    # 不断遍历，直至val_key不再小于等于最新时间戳，跳出循环
-                    if val_key <= current_latest_processed_ts:
-                        # 将每次的idx赋予res_index，当循环结束时，res_index就是小于或等于最新时间戳的最大索引值
-                        res_index = i
-                        continue
-                    else:
-                        break
-            # 将当前时间步的动态嵌入索引更新到dyemb_timestamp中
-            dyemb_timestamp[:, t:t + step_len] = res_index
-
-        # 创建一个列表，用于存储每个时间步的用户嵌入
+        # Build list of user embeddings across time steps
         dyuser_emb_list = list()
-        # dynamic_node_emb_dict's values are node embeddings (tensors)
-        # These tensors should already be on self.device due to gnn_diffusion_layer (nn.Module) being on self.device
         for val_key in sorted(dynamic_node_emb_dict.keys()):
-            # 使用embedding函数从输入序列中获取对应时间步的用户嵌入：
-            # input_seq中的用户ID作为索引，从嵌入矩阵dynamic_node_emb_dict[val_key]中检索对应的嵌入向量
-            # input_seq：[batch_size, seq_len]; dynamic_node_emb_dict[val_key]：[num_users, embedding_dim]
-            # dyuser_emb_sub = F.embedding(input_seq.cuda(), dynamic_node_emb_dict[val_key].cuda()).unsqueeze(2)  # [batch_size, seq_len, 1, embedding_dim]
-            # input_seq is already on self.device. dynamic_node_emb_dict[val_key] should also be.
-            dyuser_emb_sub = F.embedding(input_seq, dynamic_node_emb_dict[val_key]).unsqueeze(
-                2)  # [batch_size, seq_len, 1, embedding_dim] # MODIFIED: Removed .cuda()
-            dyuser_emb_list.append(dyuser_emb_sub)  # [steps, batch_size, seq_len, 1, embedding_dim]
+            dyuser_emb_sub = F.embedding(input_seq, dynamic_node_emb_dict[val_key]).unsqueeze(2)
+            dyuser_emb_list.append(dyuser_emb_sub)
 
-        # 将所有时间步的用户嵌入沿第二维拼接，形成完整的用户嵌入张量
-        # 即将dyuser_emb_list里的每个张量[batch_size, seq_len, 1, embedding_dim]沿着第二维拼接起来，
-        # 最终得到[batch_size, seq_len, num_steps, embedding_dim]
-        if not dyuser_emb_list:  # ADDED: Handle empty list case
-            # Fallback if no dynamic embeddings could be generated (e.g., empty dynamic_node_emb_dict)
-            # This situation should ideally be avoided by ensuring dynamic_node_emb_dict is populated.
-            # Create a zero tensor of the expected shape or handle error appropriately.
-            # For now, creating zeros as a placeholder. This might lead to poor performance if hit.
+        if not dyuser_emb_list:
             dyemb = torch.zeros(batch_size, max_len, self.embedding_size, device=self.device)
         else:
             dyuser_emb = torch.cat(dyuser_emb_list, dim=2)  # [bth, seq_len, time_step, hidden_size]
 
-            # 通过时间注意力机制融合不同时间步的用户嵌入
-            # dyemb = self.time_attention(dyemb_timestamp.cuda(), dyuser_emb.cuda())  # [bth, seq_len, hidden_size]
-            # dyemb_timestamp and dyuser_emb are already on self.device
-            dyemb = self.time_attention(dyemb_timestamp,
-                                        dyuser_emb)  # [bth, seq_len, hidden_size] # MODIFIED: Removed .cuda()
+            # Construct time-attention mask to block future time windows
+            time_keys = dynamic_node_emb_dict_time_tensor  # [time_step]
+            time_mask = torch.zeros(batch_size, max_len, len(dynamic_node_emb_dict_time), dtype=torch.bool, device=self.device)
+            for pos in range(max_len):
+                ts = input_timestamp[:, pos]
+                # Mask columns where time_keys > ts as True (future)
+                future = (time_keys.unsqueeze(0) > ts.unsqueeze(1))
+                # For invalid timestamps, mark entire row True to skip attention
+                invalid = ts <= float(Constants.PAD_TIME)
+                future = torch.where(invalid.unsqueeze(1), torch.ones_like(future), future)
+                time_mask[:, pos, :] = future
 
-        # 对动态嵌入应用dropout
+            dyemb = self.time_attention(dyemb_timestamp, dyuser_emb, mask=time_mask)
+
+        # Apply dropout to dynamic embeddings
         dyemb = self.dropout(dyemb)
 
-        # 将动态嵌入和顺序嵌入沿最后一维拼接，形成最终的嵌入表示
+        # Concatenate dynamic and positional embeddings along last dimension
         # final_embed = torch.cat([dyemb, order_embed], dim=-1).cuda()  # [bth, seq_len, hidden_size+pos_dim]
         final_embed = torch.cat([dyemb, order_embed],
                                 dim=-1)  # [bth, seq_len, hidden_size+pos_dim] # MODIFIED: Removed .cuda()
 
-        # 使用decoder_attention模块计算自注意力输出，使用掩码处理填充位置
+        # Compute self-attention via decoder_attention and use mask to handle padding
         # att_out = self.decoder_attention(final_embed.cuda(),
         #                                  final_embed.cuda(),
         #                                  final_embed.cuda(),
@@ -236,23 +174,23 @@ class DyHGCN(nn.Module):
                                          final_embed,
                                          final_embed,
                                          mask=mask)  # [batch_size, seq_len, hidden_size+pos_dim] # MODIFIED: Removed .cuda()
-        # 对注意力输出应用dropout
+        # Apply dropout to attention output
         # att_out = self.dropout(att_out.cuda())
         att_out = self.dropout(att_out)  # MODIFIED: Removed .cuda() (dropout input is already on device)
 
-        # 通过线性层将注意力输出转换为最终的输出表示
+        # Project attention output through linear to final logits
         # output = self.linear(att_out.cuda())  # (batch_size, seq_len, |U|)
         output = self.linear(att_out)  # (batch_size, seq_len, |U|) # MODIFIED: Removed .cuda()
 
-        # 获取之前用户的掩码，用于调整输出结果
+        # Get mask of previously activated users to adjust output
         # mask_prev_user = self.get_previous_user_mask(input_seq.cuda(), self.user_num)
         mask_prev_user = self.get_previous_user_mask(input_seq,
                                                      self.user_num)  # input_seq is already on self.device # MODIFIED
-        # 将掩码添加到输出中，进行适当的调整
+        # Add the mask to the output for adjustment
         # output = output.cuda() + mask_prev_user.cuda()
         output = output + mask_prev_user  # MODIFIED: Both are on self.device
 
-        # 将输出调整为 (batch_size * user_len, |U|) 的形状并返回
+        # Reshape to (batch_size * seq_len, |U|) and return
         return output.view(-1, output.size(-1))
 
     def get_previous_user_mask(self, seq, user_size):
@@ -291,14 +229,13 @@ class DyHGCN(nn.Module):
         # gold.contiguous().view(-1) : [bth, max_len-1] -> [bth * (max_len-1)]
         loss = loss_func(pred, gold.contiguous().view(-1))  # Both inputs to loss_func are on self.device
 
-        # 获取 pred 中每行的最大值的索引，表示模型认为每个时间步最可能的类别,pred.max(1) 返回一个包含最大值和索引的元组，而 [1] 表示取出索引部分。
+        # Get argmax per row of pred to identify the most probable class per time step; pred.max(1) returns (values, indices), [1] extracts indices.
         pred_choice = pred.max(1)[1]  # pred_choice will be on self.device
-        gold_flat = gold.contiguous().view(-1)  # 将 gold 转换为一维数组，确保它与 pred 的展平形状一致。 gold_flat on self.device
-        n_correct = pred_choice.data.eq(
-            gold_flat.data)  # 比较 pred 和 gold，返回一个布尔数组，表示每个位置是否预测正确。 n_correct on self.device
-        # gold.ne(Constants.PAD): 生成一个布尔数组，标记 gold 中不是填充符的部分。
+        gold_flat = gold.contiguous().view(-1)  # Flatten gold to 1D to match pred.
+        n_correct = pred_choice.data.eq(gold_flat.data)  # Compare predictions with gold to get boolean correctness per position.
+        # gold.ne(Constants.PAD): boolean mask for non-padding positions.
         mask_correct = gold_flat.ne(Constants.PAD).data  # mask_correct on self.device
-        # masked_select(...): 只选择有效的（非填充）预测，确保不会将填充位置计入正确预测。
-        # sum().float(): 最后计算正确预测的数量，并将其转换为浮点数。
+        # masked_select(...): select valid (non-padding) entries to avoid counting padding.
+        # sum().float(): count correct predictions and cast to float.
         n_correct = n_correct.masked_select(mask_correct).sum().float()  # result is a scalar tensor on self.device
         return loss, n_correct
