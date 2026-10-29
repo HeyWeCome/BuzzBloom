@@ -1,19 +1,81 @@
-### BuzzBloom 🌼🐝
+# ALTER Code and Data Supplement
 
-BuzzBloom is the flexible and useful project for information diffusion prediction. I hope this project will help the community to harness the power of information diffusion and its potential to shape a more connected and engaging digital landscape. Join us in revolutionizing the way information spreads—we welcome passionate contributors to submit their PRs and help us grow this exciting journey! 🌟✨
+This package contains the implementation of ALTER and the processed MIND data used in the experiments.
 
-**Currently integrated models**:
+## Included Data
 
-| **Model**      | **Title**                                                                                                           | **Link**                                                    | **Publication** |
-|----------------|---------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------|------------------|
-| DyHGCN         | DyHGCN: A Dynamic Heterogeneous Graph Convolutional Network to Learn Users' Dynamic Preferences for Information Diffusion Prediction | [Paper](https://dl.acm.org/doi/10.1007/978-3-030-67664-3_21) | ECML PKDD 2020  |
-| MS-HGAT        | MS-HGAT: Memory-Enhanced Sequential Hypergraph Attention Network for Information Diffusion Prediction | [Paper](https://ojs.aaai.org/index.php/AAAI/article/view/20334) | AAAI-22         |
-| DisenIDP       | Enhancing Information Diffusion Prediction with Self-Supervised Disentangled User and Cascade Representations | [Paper](https://dl.acm.org/doi/abs/10.1145/3583780.3615230) | CIKM-23         |
-| PMRCA          | A Pattern-Driven Information Diffusion Prediction Model Based on Multisource Resonance and Cognitive Adaptation | [Paper](https://doi.org/10.1145/3726302.3729883) | SIGIR-25         |
+The complete processed datasets used in the paper are too large for the supplementary package. We therefore include MIND, the smallest of the three evaluated datasets, to provide a complete and directly executable example of the data pipeline, model training, and evaluation protocol. The same data interface and experimental procedure are used for X-Election and Zhihu.
 
+The MIND files are located in `data/mind/`:
 
-## ✨ Updates ✨
+| File | Description |
+| --- | --- |
+| `user.txt` | User identifiers and available profile fields |
+| `content.txt` | Content identifiers and content information |
+| `cascades.txt` | Time ordered participation events for each content item |
+| `user_history.txt` | Historical user and content interactions |
 
-**🚀 Performance & Modernization Update (2025-07-01)**
+All data remain subject to the terms and conditions of the original MIND dataset.
 
-This project has been supercharged with the latest features from **PyTorch 2.x** for a massive performance boost! ⚡ We've integrated `torch.compile` to JIT-compile the model, slashing Python overhead and accelerating GPU computations. Additionally, we've enabled **TensorFloat32 (TF32)** to leverage the power of modern NVIDIA GPUs, offering near-FP16 speed with FP32's stability. The data loading pipeline was also refactored using PyTorch's native `DataLoader`, enabling parallel data pre-fetching to keep your GPU fully utilized. Enjoy the new speed! 💨
+## Code Structure
+
+| Path | Description |
+| --- | --- |
+| `main.py` | Training and evaluation entry point |
+| `models/alter.py` | Implementation of ALTER |
+| `models/modules/` | Graph and sequence encoder components |
+| `dataset/dataloader.py` | Data loading, chronological splitting, and sample construction |
+| `trainer.py` | Optimization, checkpoint selection, and ranking evaluation |
+| `utils.py` | Random seed, logging, and configuration utilities |
+
+## Environment
+
+The reported experiments use the following software environment:
+
+- Python 3.10.19
+- NumPy 1.26.4
+- PyTorch 2.5.1 with CUDA 12.1
+- PyTorch Lightning 2.6.0
+
+CUDA is optional for code inspection, but a CUDA compatible GPU is recommended for training.
+
+## Training on MIND
+
+Run the following command from this directory:
+
+```bash
+python main.py \
+  --model alter \
+  --data mind \
+  --data_root ./data \
+  --split_strategy leave_one_out \
+  --d_model 64 \
+  --num_layers 2 \
+  --num_heads 8 \
+  --dropout 0.1 \
+  --max_seq_len 128 \
+  --max_time_bucket 32 \
+  --alter_layers 3 \
+  --alter_routing_anchors 8 \
+  --alter_context_states 16 \
+  --alter_assignment_budget 4 \
+  --alter_temperature 2.0 \
+  --alter_latent_regularization_weight 1e-6 \
+  --epochs 1000 \
+  --batch_size 1024 \
+  --eval_batch_size 1024 \
+  --lr 1e-3 \
+  --weight_decay 1e-5 \
+  --num_negatives 100 \
+  --patience 5 \
+  --grad_clip 1.0 \
+  --seed 42
+```
+
+The reported results are averaged over seeds `42`, `43`, and `44`. Repeat the command with the corresponding value of `--seed` for the other runs. The checkpoint with the highest validation NDCG@10 is selected automatically, and full candidate test evaluation is performed after training.
+
+Training outputs, configurations, checkpoints, and metric logs are written under `runs/`.
+
+## Evaluation Protocol
+
+The code uses chronological leave one out splits. The observed participation graph is constructed only from training interactions. During training, each target is paired with 100 sampled valid negatives. During validation and testing, the target is ranked against all valid users after participants already observed in the cascade prefix are masked.

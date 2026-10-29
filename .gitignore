@@ -162,3 +162,6 @@ cython_debug/
 .idea/
 log/
 saved/
+
+# macOS
+.DS_Store
